@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rupeedesk - Task & Earn</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app-container">
+        <div id="announcement-banner" class="announcement-banner hidden">
+            <div class="announcement-content">
+                <h3 id="announcement-title"></h3>
+                <p id="announcement-body"></p>
+            </div>
+            <button id="close-announcement-btn">&times;</button>
+        </div>
+
+        <main id="home-page" class="page-content active">
+            <header class="header">
+                <h1 class="welcome-text">welcome RUPEEDESK!</h1>
+                <div class="invite-code-wrapper">
+                    <span>Invite Code: <strong id="referral-code">LOADING...</strong></span>
+                    <button id="copy-referral-btn"><i class="fa-regular fa-copy"></i> Copy</button>
+                </div>
+            </header>
+            <section class="balance-card">
+                <p class="balance-title">Current Balance</p>
+                <div class="balance-amount">
+                    <i class="fas fa-coins coin-icon"></i>
+                    <span id="coin-balance">₹0.00</span>
+                </div>
+            </section>
+            <section class="withdraw-section">
+                <button id="withdraw-btn" class="withdraw-button">Withdraw</button>
+            </section>
+
+            <div class="swiper-container">
+                <div class="swiper mySwiper">
+                    <div class="swiper-wrapper">
+                        <div class="swiper-slide daily-checkin-slide" style="cursor: pointer;">
+                            <img src="https://placehold.co/800x400/f97316/FFFFFF?text=Daily+Check-In%0AClick%20to%20Earn%20Rewards!" alt="Daily Check-in Banner">
+                        </div>
+                        <div class="swiper-slide">
+                            <img src="https://placehold.co/800x400/3B82F6/FFFFFF?text=Invite%20Friends%0AGet%20Big%20Bonuses!" alt="Referral Program Banner">
+                        </div>
+                        <div class="swiper-slide">
+                            <img src="https://placehold.co/800x400/16a34a/FFFFFF?text=Complete%20Tasks%0ABoost%20Your%20Income!" alt="Complete Tasks Banner">
+                        </div>
+                        <div class="swiper-slide">
+                            <img src="https://placehold.co/800x400/9333ea/FFFFFF?text=24/7%20Support%0AWe%20Are%20Here%20To%20Help!" alt="Customer Support Banner">
+                        </div>
+                    </div>
+                    <div class="swiper-pagination"></div>
+                </div>
+            </div>
+            
+            <section class="rewards-grid">
+                <div id="daily-spin-btn" class="reward-item">
+                    <i class="fa-solid fa-dharmachakra"></i>
+                    <span>Daily Spin</span>
+                </div>
+                 <div class="reward-item" style="opacity: 0.5; cursor: not-allowed;">
+                    <i class="fa-solid fa-gift"></i>
+                    <span>Coming Soon</span>
+                </div>
+            </section>
+
+            <div class="download-app-card">
+                <div class="download-info">
+                    <h3><i class="fas fa-rocket"></i> Go Automatic!</h3>
+                    <p>Install our helper app to complete SMS tasks automatically in the background and earn passively.</p>
+                </div>
+                <a href="#" id="download-apk-btn" class="download-btn">
+                    <i class="fab fa-android"></i> Download APK
+                </a>
+            </div>
+
+            <h3 class="tasks-title">Available Tasks</h3>
+            <section id="task-list" class="task-list-container">
+                 <div class="task-card">
+                    <div class="task-info">
+                        <div class="task-icon whatsapp-icon"><i class="fa-brands fa-whatsapp"></i></div>
+                        <div class="task-details">
+                            <h3>WhatsApp Task</h3>
+                            <p>Receive messages & earn ₹0.63 per message.</p>
+                        </div>
+                    </div>
+                    <button id="whatsapp-bind-btn" class="task-action-btn">Bind Now</button>
+                </div>
+                 <div class="task-card">
+                    <div class="task-info">
+                        <div class="task-icon sms-icon"><i class="fa-solid fa-comment-sms"></i></div>
+                        <div class="task-details">
+                            <h3>SMS Task</h3>
+                            <p>Send assigned SMS & earn ₹0.17 per message.</p>
+                        </div>
+                    </div>
+                    <button id="assign-sms-btn" class="task-action-btn">Get Task</button>
+                </div>
+                <p class="text-center text-sm text-gray-500 mt-2">Daily SMS Limit: <span id="sms-count">0</span>/100</p>
+            </section>
+        </main>
+        
+        <main id="mine-page" class="page-content hidden">
+             <div class="profile-header">
+                <h2 id="profile-custom-id">...</h2>
+                <p>Status: <span id="profile-status" class="status-active">...</span></p>
+            </div>
+            <div class="info-grid">
+                <div class="info-box"><h3>User ID</h3><p id="user-id-display">...</p></div>
+                <div class="info-box"><h3>Device ID</h3><p id="device-id-display">...</p></div>
+            </div>
+            <div class="action-list">
+                <div class="action-item" data-page="referral-page">
+                    <i class="fa-solid fa-users"></i>
+                    <span>My Referrals</span>
+                    <i class="fa-solid fa-chevron-right"></i>
+                </div>
+                <div class="action-item" id="bank-account-btn">
+                    <i class="fa-solid fa-building-columns"></i>
+                    <span>Bank Account</span>
+                    <i class="fa-solid fa-chevron-right"></i>
+                </div>
+                <div class="action-item" id="withdrawal-history-btn">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <span>Withdrawal History</span>
+                    <i class="fa-solid fa-chevron-right"></i>
+                </div>
+                <div class="action-item theme-switcher">
+                    <i class="fa-solid fa-circle-half-stroke"></i>
+                    <span>Dark Theme</span>
+                    <label class="switch">
+                        <input type="checkbox" id="theme-checkbox">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="action-item" id="logout-btn">
+                    <i class="fa-solid fa-right-from-bracket"></i>
+                    <span>Logout</span>
+                    <i class="fa-solid fa-chevron-right"></i>
+                </div>
+            </div>
+        </main>
+
+        <main id="referral-page" class="page-content hidden">
+            <header class="header">
+                <button class="back-btn" data-page="mine-page"><i class="fas fa-arrow-left"></i></button>
+                <h1 class="welcome-text">Referral Center</h1>
+            </header>
+            <div class="referral-stats">
+                <div class="stat-card">
+                    <h3>Total Referrals</h3>
+                    <p id="total-referrals">0</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Total Earnings</h3>
+                    <p id="total-referral-earnings">₹0.00</p>
+                </div>
+            </div>
+            <div class="referral-list-container">
+                <h3>Referred Users</h3>
+                <ul id="referral-list"></ul>
+            </div>
+        </main>
+    </div>
+
+    <a href="https://t.me/TgLokesh4507" target="_blank" class="fab-customer-care">
+        <i class="fas fa-headset"></i>
+    </a>
+
+    <nav class="bottom-nav">
+        <a href="#" class="nav-item active" data-page="home-page">
+            <i class="fa-solid fa-house"></i>
+            <span>Home</span>
+        </a>
+        <a href="#" class="nav-item" data-page="mine-page">
+            <i class="fa-regular fa-user"></i>
+            <span>Mine</span>
+        </a>
+    </nav>
+    <div id="modal" class="modal-overlay">
+        <div class="modal-content">
+            <h3 id="modal-title" class="modal-title">Modal Title</h3>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+    <script type="module" src="script.js"></script>
+</body>
+</html>

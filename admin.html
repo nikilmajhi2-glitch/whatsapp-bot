@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Master Control</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .active-tab { background-color: #10B981; color: white; }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans h-screen flex overflow-hidden">
+
+    <div class="w-64 bg-gray-900 text-white flex flex-col flex-shrink-0 transition-all duration-300">
+        <div class="p-5 font-bold text-2xl border-b border-gray-700 flex items-center">
+            <i class="fab fa-whatsapp text-green-400 mr-2"></i> MASTER
+        </div>
+        <nav class="flex-1 p-4 space-y-2">
+            <button onclick="showTab('devices')" id="tab-btn-devices" class="w-full text-left py-3 px-4 rounded hover:bg-gray-800 transition active-tab">
+                <i class="fas fa-server mr-3"></i> Device Manager
+            </button>
+            <button onclick="showTab('single')" id="tab-btn-single" class="w-full text-left py-3 px-4 rounded hover:bg-gray-800 transition">
+                <i class="fas fa-paper-plane mr-3"></i> Send Single
+            </button>
+            <button onclick="showTab('bulk')" id="tab-btn-bulk" class="w-full text-left py-3 px-4 rounded hover:bg-gray-800 transition">
+                <i class="fas fa-mail-bulk mr-3"></i> Bulk Campaign
+            </button>
+            <button onclick="showTab('logs')" id="tab-btn-logs" class="w-full text-left py-3 px-4 rounded hover:bg-gray-800 transition">
+                <i class="fas fa-history mr-3"></i> Message Logs
+            </button>
+        </nav>
+        <div class="p-4 bg-gray-800">
+            <a href="/" target="_blank" class="text-sm text-gray-400 hover:text-white flex items-center">
+                <i class="fas fa-external-link-alt mr-2"></i> Open User Panel
+            </a>
+        </div>
+    </div>
+
+    <div class="flex-1 flex flex-col overflow-hidden">
+        <header class="bg-white shadow p-4 flex justify-between items-center z-10">
+            <h2 class="text-xl font-bold text-gray-800" id="page-title">Device Manager</h2>
+            <div class="flex items-center space-x-2">
+                <button onclick="loadAllData()" class="bg-blue-100 text-blue-600 px-3 py-1 rounded hover:bg-blue-200">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+            </div>
+        </header>
+
+        <main class="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-6">
+
+            <div id="tab-devices" class="tab-content">
+                <div class="bg-white rounded-lg shadow overflow-hidden">
+                    <table class="min-w-full leading-normal">
+                        <thead>
+                            <tr class="bg-gray-800 text-white">
+                                <th class="px-5 py-3 text-left">Phone Number</th>
+                                <th class="px-5 py-3 text-left">User ID</th>
+                                <th class="px-5 py-3 text-left">Status</th>
+                                <th class="px-5 py-3 text-left">Msgs Sent</th>
+                                <th class="px-5 py-3 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="device-list">
+                            </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="tab-single" class="tab-content hidden">
+                <div class="max-w-2xl mx-auto bg-white rounded-lg shadow p-8">
+                    <div class="mb-4">
+                        <label class="block text-gray-700 font-bold mb-2">Select Sender Device</label>
+                        <select id="single-device" class="w-full p-3 border rounded bg-gray-50">
+                            <option value="">Auto (Pick Best Available)</option>
+                        </select>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-gray-700 font-bold mb-2">Recipient Number</label>
+                        <input type="text" id="single-to" placeholder="919876543210" class="w-full p-3 border rounded">
+                    </div>
+                    <div class="mb-6">
+                        <label class="block text-gray-700 font-bold mb-2">Message</label>
+                        <textarea id="single-msg" rows="4" class="w-full p-3 border rounded"></textarea>
+                    </div>
+                    <button onclick="sendSingle()" class="w-full bg-green-500 text-white font-bold py-3 rounded hover:bg-green-600">
+                        Send Message
+                    </button>
+                </div>
+            </div>
+
+            <div id="tab-bulk" class="tab-content hidden">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="md:col-span-2">
+                        <div class="bg-white rounded-lg shadow p-6">
+                            <h3 class="text-lg font-bold mb-4">Bulk Sender</h3>
+                            
+                            <label class="block text-gray-700 font-bold mb-2">Sender Device</label>
+                            <select id="bulk-device" class="w-full p-3 border rounded bg-gray-50 mb-4">
+                                <option value="">Auto (Rotate Available)</option>
+                            </select>
+
+                            <label class="block text-gray-700 font-bold mb-2">Phone Numbers (One per line)</label>
+                            <textarea id="bulk-numbers" rows="10" placeholder="919999999999&#10;918888888888&#10;917777777777" class="w-full p-3 border rounded bg-gray-50 mb-4 font-mono text-sm"></textarea>
+                            
+                            <label class="block text-gray-700 font-bold mb-2">Message Content</label>
+                            <textarea id="bulk-msg" rows="3" class="w-full p-3 border rounded mb-4"></textarea>
+
+                            <button onclick="sendBulk()" class="w-full bg-purple-600 text-white font-bold py-3 rounded hover:bg-purple-700">
+                                <i class="fas fa-rocket mr-2"></i> Launch Bulk Campaign
+                            </button>
+                        </div>
+                    </div>
+                    <div class="md:col-span-1">
+                        <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
+                            <p class="font-bold text-yellow-700">⚠️ Anti-Ban Tips</p>
+                            <ul class="list-disc list-inside text-sm text-yellow-600 mt-2">
+                                <li>Don't send more than 50 msgs/hour per device.</li>
+                                <li>Use "Auto" to rotate devices if you have multiple.</li>
+                                <li>Ensure numbers are valid with country code.</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-logs" class="tab-content hidden">
+                <div class="bg-white rounded-lg shadow overflow-hidden">
+                    <table class="min-w-full leading-normal">
+                        <thead>
+                            <tr class="bg-gray-200 text-gray-600 text-xs uppercase">
+                                <th class="px-5 py-3">Time</th>
+                                <th class="px-5 py-3">Device</th>
+                                <th class="px-5 py-3">Target</th>
+                                <th class="px-5 py-3">Message</th>
+                                <th class="px-5 py-3">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="logs-list" class="text-sm"></tbody>
+                    </table>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', loadAllData);
+
+        function showTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('nav button').forEach(el => el.classList.remove('active-tab', 'bg-gray-800'));
+            
+            document.getElementById(`tab-${tabName}`).classList.remove('hidden');
+            document.getElementById(`tab-btn-${tabName}`).classList.add('active-tab', 'bg-gray-800');
+            
+            const titles = { 'devices': 'Device Manager', 'single': 'Send Single Message', 'bulk': 'Bulk Campaign Launcher', 'logs': 'System Logs' };
+            document.getElementById('page-title').innerText = titles[tabName];
+            loadAllData();
+        }
+
+        async function loadAllData() {
+            const res = await fetch('/api/whatsapp/status');
+            const data = await res.json();
+            
+            const deviceList = document.getElementById('device-list');
+            const selects = [document.getElementById('single-device'), document.getElementById('bulk-device')];
+            
+            selects.forEach(s => s.innerHTML = '<option value="">Auto (Best Available)</option>');
+            deviceList.innerHTML = '';
+
+            data.devices.forEach(d => {
+                const statusHtml = d.connected 
+                    ? '<span class="px-2 py-1 font-semibold leading-tight text-green-900 bg-green-200 rounded-full">Online</span>'
+                    : '<span class="px-2 py-1 font-semibold leading-tight text-red-900 bg-red-200 rounded-full">Offline</span>';
+                
+                deviceList.innerHTML += `
+                    <tr class="border-b border-gray-200 hover:bg-gray-100">
+                        <td class="px-5 py-4 bg-white text-sm font-bold">${d.phoneNumber}</td>
+                        <td class="px-5 py-4 bg-white text-sm">${d.userId || 'System'}</td>
+                        <td class="px-5 py-4 bg-white text-sm">${statusHtml}</td>
+                        <td class="px-5 py-4 bg-white text-sm">${d.messagesSent}</td>
+                        <td class="px-5 py-4 bg-white text-sm text-right">
+                            <button onclick="deleteDevice('${d.id}')" class="bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-3 rounded text-xs">DELETE / LOGOUT</button>
+                        </td>
+                    </tr>
+                `;
+
+                if(d.connected) {
+                    selects.forEach(s => {
+                        const opt = document.createElement('option');
+                        opt.value = d.id;
+                        opt.innerText = `${d.phoneNumber} (${d.userId || 'Admin'})`;
+                        s.appendChild(opt);
+                    });
+                }
+            });
+
+            const logRes = await fetch('/api/messages');
+            const logs = await logRes.json();
+            const logList = document.getElementById('logs-list');
+            logList.innerHTML = '';
+            
+            logs.forEach(l => {
+                logList.innerHTML += `
+                    <tr class="border-b border-gray-200">
+                        <td class="px-5 py-2 bg-white text-gray-500">${new Date(l.timestamp).toLocaleTimeString()}</td>
+                        <td class="px-5 py-2 bg-white font-mono">${l.deviceId || '-'}</td>
+                        <td class="px-5 py-2 bg-white font-bold">${l.phoneNumber}</td>
+                        <td class="px-5 py-2 bg-white truncate max-w-xs" title="${l.messageText}">${l.messageText}</td>
+                        <td class="px-5 py-2 bg-white capitalize">${l.status}</td>
+                    </tr>
+                `;
+            });
+        }
+
+        async function deleteDevice(id) {
+            if(!confirm("Are you sure? This will disconnect the device and delete it from the system.")) return;
+            await fetch(`/api/earning/remove-device/${id}`, { method: 'DELETE' });
+            loadAllData();
+        }
+
+        async function sendSingle() {
+            const deviceId = document.getElementById('single-device').value;
+            const phone = document.getElementById('single-to').value;
+            const msg = document.getElementById('single-msg').value;
+
+            if(!phone || !msg) return alert("Fill all fields");
+
+            const res = await fetch('/api/whatsapp/send', {
+                method: 'POST',
+                body: JSON.stringify({ deviceId, phoneNumber: phone, messageText: msg })
+            });
+            
+            if(res.ok) { alert("Sent!"); document.getElementById('single-msg').value = ''; showTab('logs'); } else { alert("Failed"); }
+        }
+
+        async function sendBulk() {
+            const deviceId = document.getElementById('bulk-device').value;
+            const numbersRaw = document.getElementById('bulk-numbers').value;
+            const msg = document.getElementById('bulk-msg').value;
+
+            if(!numbersRaw || !msg) return alert("Fill numbers and message");
+
+            const numbers = numbersRaw.split(/[\n,]+/).map(n => n.trim()).filter(n => n.length > 5);
+
+            const res = await fetch('/api/whatsapp/bulk', {
+                method: 'POST',
+                body: JSON.stringify({ deviceId, phoneNumbers: numbers, message: msg })
+            });
+            
+            const data = await res.json();
+            alert(data.message);
+            showTab('logs');
+        }
+    </script>
+</body>
+</html>

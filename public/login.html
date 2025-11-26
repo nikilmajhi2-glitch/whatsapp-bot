@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome - Rupeedesk</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Roboto', sans-serif; background-color: #f3f4f6; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        .form-container { max-width: 400px; width: 90%; padding: 2.5rem; background: #fff; border-radius: 1.5rem; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+        .logo { text-align: center; margin-bottom: 2rem; }
+        .logo h1 { font-size: 2rem; font-weight: 700; color: #f97316; }
+        .logo p { color: #6b7280; }
+        .form-toggle { display: flex; margin-bottom: 1.5rem; background-color: #e5e7eb; border-radius: 999px; padding: 0.25rem; }
+        .toggle-btn { flex: 1; padding: 0.75rem; text-align: center; background: transparent; border: none; font-weight: 500; color: #4b5563; cursor: pointer; border-radius: 999px; transition: all 0.3s ease; }
+        .toggle-btn.active { background: #f97316; color: #fff; box-shadow: 0 4px 10px rgba(249,115,22,0.4); }
+        .form-section { display: none; }
+        .form-section.active { display: block; }
+        .input-group { position: relative; margin-bottom: 1.25rem; }
+        .input-group i { position: absolute; top: 50%; left: 1rem; transform: translateY(-50%); color: #9ca3af; }
+        input { width: 100%; padding: 1rem 1rem 1rem 3rem; border: 1px solid #d1d5db; border-radius: 0.75rem; background-color: #f9fafb; font-size: 1rem; box-sizing: border-box; }
+        .submit-btn { width: 100%; padding: 1rem; background: linear-gradient(135deg, #fbbf24, #f97316); color: #fff; border: none; border-radius: 0.75rem; font-weight: 700; font-size: 1rem; cursor: pointer; }
+        .error-msg { color: #ef4444; text-align: center; margin-top: 1rem; font-weight: 500; }
+        .device-id { color: #6b7280; text-align: center; margin-top: 2rem; font-size: 0.8rem; }
+    </style>
+</head>
+<body>
+    <div class="form-container">
+        <div class="logo"><h1>Rupeedesk</h1><p>Task & Earn</p></div>
+        <div class="form-toggle">
+            <button id="login-toggle" class="toggle-btn active">Login</button>
+            <button id="signup-toggle" class="toggle-btn">Sign Up</button>
+        </div>
+        <div id="login-form" class="form-section active">
+            <div class="input-group"><i class="fas fa-envelope"></i><input type="email" id="login-email" placeholder="Email" required></div>
+            <div class="input-group"><i class="fas fa-lock"></i><input type="password" id="login-password" placeholder="Password" required></div>
+            <button id="login-btn" class="submit-btn">Login</button>
+        </div>
+        <div id="signup-form" class="form-section">
+            <div class="input-group"><i class="fas fa-envelope"></i><input type="email" id="signup-email" placeholder="Email" required></div>
+            <div class="input-group"><i class="fas fa-lock"></i><input type="password" id="signup-password" placeholder="Password (min. 6 characters)" required></div>
+            <div class="input-group"><i class="fas fa-user-plus"></i><input type="text" id="referral-code" placeholder="Referral Code (Optional)"></div>
+            <button id="signup-btn" class="submit-btn">Create Account</button>
+        </div>
+        <p id="error-message" class="error-msg"></p>
+        <p id="device-id-display" class="device-id"></p>
+    </div>
+    <script type="module" src="auth.js"></script>
+</body>
+</html>
