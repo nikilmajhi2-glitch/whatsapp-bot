@@ -160,31 +160,31 @@ const dailyCheckin = async () => { if (!userData || !currentUser) return; const 
 document.getElementById('copy-referral-btn').addEventListener('click', () => { if(userData && userData.referralCode) { navigator.clipboard.writeText(userData.referralCode).then(() => showModal("Copied!", "<p>Referral code copied to clipboard.</p>")).catch(err => handleError({ message: 'Failed to copy.' })); } });
 document.getElementById('daily-spin-btn').addEventListener('click', () => { if (!userData || !currentUser) return; const today = new Date().toDateString(); const lastSpin = userData.dailySpin.lastSpin ? new Date(userData.dailySpin.lastSpin.seconds * 1000).toDateString() : null; if (today === lastSpin) { return showModal("Already Spin", "<p>You have already used your daily spin. Come back tomorrow!</p>"); } const segments = [ { value: 5, label: '₹5' }, { value: 0, label: 'Try Again' }, { value: 10, label: '₹10' }, { value: 0, label: 'Try Again' }, { value: 200, label: '₹200' }, { value: 0, label: 'Try Again' }, { value: 2, label: '₹2' }, { value: 0, label: 'Try Again' }]; let svg = `<svg id="wheel" width="250" height="250" viewBox="0 0 100 100">`; const angle = 360 / segments.length; const colors = ['#f87171', '#fbbf24', '#34d399', '#60a5fa', '#c084fc', '#f472b6', '#a3e635', '#fde047']; segments.forEach((seg, i) => { const [x, y] = [50 + 50 * Math.cos(Math.PI / 180 * (angle * i)), 50 + 50 * Math.sin(Math.PI / 180 * (angle * i))]; svg += `<path d="M50 50 L${x} ${y} A50 50 0 0 1 ${50 + 50 * Math.cos(Math.PI / 180 * (angle * (i + 1)))} ${50 + 50 * Math.sin(Math.PI / 180 * (angle * (i + 1)))} Z" fill="${colors[i % colors.length]}"></path>`; const textAngle = angle * i + angle / 2; const [tx, ty] = [50 + 35 * Math.cos(Math.PI / 180 * textAngle), 50 + 35 * Math.sin(Math.PI / 180 * textAngle)]; svg += `<text x="${tx}" y="${ty}" transform="rotate(${textAngle + 90} ${tx} ${ty})" fill="white" text-anchor="middle" font-size="6" font-weight="bold">${seg.label}</text>`; }); svg += `</svg>`; const body = `<div id="spin-container"><div id="spin-marker"></div>${svg}</div>`; const actions = `<button class="modal-button-primary" id="spin-it-btn">Spin Now!</button>`; showModal("Daily Spin", body, actions); document.getElementById('spin-it-btn').addEventListener('click', async () => { document.getElementById('spin-it-btn').disabled = true; const p = Math.random(); let resultIndex; if (p < 0.6) resultIndex = Math.random() < 0.5 ? 1 : 3; else if (p < 0.95) resultIndex = 0; else if (p < 0.99) resultIndex = 2; else resultIndex = 4; const reward = segments[resultIndex].value; const totalRotations = 5 * 360; const targetAngle = -((angle * resultIndex) + (angle / 2) - (angle * 0.25) + (Math.random() * angle * 0.5)); const finalRotation = totalRotations + targetAngle; document.getElementById('wheel').style.transform = `rotate(${finalRotation}deg)`; setTimeout(async () => { try { await updateDoc(doc(db, "users", currentUser.uid), { balance: increment(reward), 'dailySpin.lastSpin': serverTimestamp() }); showModal("Congratulations!", `<p>You won ₹${reward.toFixed(2)}!</p>`); } catch (error) { handleError(error); } }, 5500); }); });
 // ==========================================
-//  STRICT BIND LOGIC (With Verification)
+//  🛑 STRICT BIND LOGIC (POLLING)
 // ==========================================
 document.getElementById('whatsapp-bind-btn').addEventListener('click', () => {
     if (!currentUser) return;
     
     const body = `
-        <p>Enter your WhatsApp Number (e.g., 919876543210)</p>
-        <input type="tel" id="whatsapp-input" placeholder="919876543210" maxlength="13">
-        <p style="font-size:12px; color:gray; margin-top:5px;">Must include country code (e.g., 91)</p>
+        <p class="mb-2">Enter your WhatsApp Number (with country code):</p>
+        <input type="tel" id="whatsapp-input" placeholder="919876543210" maxlength="13" class="w-full p-2 border rounded">
+        <p style="font-size:12px; color:gray; margin-top:5px;">e.g., 919999999999</p>
     `;
     const actions = `<button class="modal-button-secondary" onclick="closeModal()">Cancel</button><button class="modal-button-primary" id="submit-whatsapp">Get Code</button>`;
     
-    showModal("Bind Device", body, actions);
-    
+    showModal("Bind WhatsApp", body, actions);
+
     document.getElementById('submit-whatsapp').addEventListener('click', async () => {
         const btn = document.getElementById('submit-whatsapp');
         const number = document.getElementById('whatsapp-input').value.trim();
-        
+
         if (number.length < 10) return alert("Invalid Number");
         
-        btn.innerHTML = "Generating...";
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Wait...';
         btn.disabled = true;
-        
+
         try {
-            // 1. Request Pairing Code
+            // 1. ASK BACKEND FOR CODE
             const res = await fetch('/api/earning/add-device', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -195,74 +195,71 @@ document.getElementById('whatsapp-bind-btn').addEventListener('click', () => {
                 })
             });
             const data = await res.json();
-            
+
             if (data.success && data.pairingCode) {
-                // 2. Show Pairing Code UI
+                // 2. SHOW CODE TO USER
                 const pairBody = `
                     <div style="text-align:center;">
                         <p>Open WhatsApp > Linked Devices > Link with phone number</p>
-                        <h2 style="font-size:32px; letter-spacing:5px; color:#f97316; margin:15px 0; font-weight:bold;">${data.pairingCode}</h2>
-                        <p style="color:gray;">Enter this code in WhatsApp immediately.</p>
-                        <div id="connection-status" style="margin-top:15px; font-weight:bold; color:#f97316; font-size: 1.1rem;">
+                        <h2 style="font-size:32px; letter-spacing:5px; color:#f97316; margin:20px 0; font-weight:bold; background:#fff4e6; padding:10px; border-radius:8px;">${data.pairingCode}</h2>
+                        <p class="text-sm text-gray-600">Enter this code in WhatsApp immediately.</p>
+                        
+                        <div id="connection-status" style="margin-top:20px; font-weight:bold; color:#f97316; font-size: 1.1rem; padding:10px; border:1px dashed #f97316; border-radius:8px;">
                             <i class="fas fa-spinner fa-spin"></i> Waiting for connection...
                         </div>
                     </div>
                 `;
-                // We remove the "I Connected" button because we will auto-detect
+                // NOTE: No "I Connected" button. We force them to wait for the check.
                 showModal("Pairing Code", pairBody, `<button class="modal-button-secondary" onclick="closeModal()">Cancel</button>`);
-                
-                // 3. START STRICT POLLING (Check if actually connected)
+
+                // 3. START POLLING (STRICT CHECK)
                 let attempts = 0;
                 const pollInterval = setInterval(async () => {
                     attempts++;
                     
-                    // Timeout after 2 minutes (40 attempts * 3 seconds)
+                    // Timeout after 2 minutes (40 checks * 3 seconds)
                     if (attempts > 40) {
                         clearInterval(pollInterval);
                         const statusEl = document.getElementById('connection-status');
-                        if (statusEl) {
-                            statusEl.innerHTML = '<span style="color:red">❌ Timeout. Pairing failed.</span>';
-                        }
+                        if(statusEl) statusEl.innerHTML = '<span style="color:red"><i class="fas fa-times-circle"></i> Timeout. Try again.</span>';
                         return;
                     }
-                    
+
                     try {
-                        // Check Backend Status
+                        // Ask Go Backend: "Is this number connected?"
                         const statusRes = await fetch('/api/whatsapp/status');
                         const statusData = await statusRes.json();
                         
-                        // Find our specific device
                         const device = statusData.devices.find(d => d.phoneNumber === number || d.id === number);
-                        
-                        // 4. IF CONNECTED -> Update Firebase & UI
+
+                        // 4. SUCCESS CONDITION
                         if (device && device.connected === true) {
                             clearInterval(pollInterval);
                             
                             const statusEl = document.getElementById('connection-status');
-                            if (statusEl) {
-                                statusEl.innerHTML = '<span style="color:#10B981">✅ Connected Successfully!</span>';
-                            }
-                            
-                            // NOW we save to Firebase because we verified it
+                            if(statusEl) statusEl.innerHTML = '<span style="color:#10B981; font-size:1.2rem;"><i class="fas fa-check-circle"></i> Connected Successfully!</span>';
+
+                            // 5. ONLY NOW SAVE TO FIREBASE
                             await updateDoc(doc(db, "users", currentUser.uid), { whatsAppNumber: number });
                             
+                            // Refresh UI
                             setTimeout(() => {
                                 closeModal();
-                                location.reload(); // Reload to update UI state
+                                updateUI(); 
                             }, 2000);
                         }
                     } catch (err) {
                         console.log("Polling...", err);
                     }
                 }, 3000); // Check every 3 seconds
-                
+
             } else {
                 alert("Error: " + (data.error || "Failed to generate code"));
                 closeModal();
             }
         } catch (e) {
             console.error(e);
-            alert("Connection Error to Backend");
+            alert("Connection Error. Check if Go server is running.");
             closeModal();
         }
     });
@@ -274,6 +271,7 @@ document.getElementById('logout-btn').addEventListener('click', () => { signOut(
 document.addEventListener('DOMContentLoaded', () => {
     new Swiper(".mySwiper", { loop: true, autoplay: { delay: 3500 }, pagination: { el: ".swiper-pagination", clickable: true } });
 });
+
 
 document.getElementById('assign-sms-btn').addEventListener('click', async () => {
     if (!userData || !currentUser) return;
