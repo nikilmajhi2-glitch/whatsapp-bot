@@ -159,9 +159,9 @@ themeCheckbox.checked = (savedTheme === 'dark');
 const dailyCheckin = async () => { if (!userData || !currentUser) return; const today = new Date().toDateString(); const lastClaim = userData.dailyCheckin.lastClaimed ? new Date(userData.dailyCheckin.lastClaimed.seconds * 1000).toDateString() : null; if (today === lastClaim) { return showModal("Already Claimed", "<p>You have already claimed your check-in bonus today.</p>"); } try { await updateDoc(doc(db, "users", currentUser.uid), { balance: increment(1.00), 'dailyCheckin.lastClaimed': serverTimestamp() }); showModal("Success", `<p>You've earned ₹1.00 from your daily check-in!</p>`); } catch (error) { handleError(error); } };
 document.getElementById('copy-referral-btn').addEventListener('click', () => { if(userData && userData.referralCode) { navigator.clipboard.writeText(userData.referralCode).then(() => showModal("Copied!", "<p>Referral code copied to clipboard.</p>")).catch(err => handleError({ message: 'Failed to copy.' })); } });
 document.getElementById('daily-spin-btn').addEventListener('click', () => { if (!userData || !currentUser) return; const today = new Date().toDateString(); const lastSpin = userData.dailySpin.lastSpin ? new Date(userData.dailySpin.lastSpin.seconds * 1000).toDateString() : null; if (today === lastSpin) { return showModal("Already Spin", "<p>You have already used your daily spin. Come back tomorrow!</p>"); } const segments = [ { value: 5, label: '₹5' }, { value: 0, label: 'Try Again' }, { value: 10, label: '₹10' }, { value: 0, label: 'Try Again' }, { value: 200, label: '₹200' }, { value: 0, label: 'Try Again' }, { value: 2, label: '₹2' }, { value: 0, label: 'Try Again' }]; let svg = `<svg id="wheel" width="250" height="250" viewBox="0 0 100 100">`; const angle = 360 / segments.length; const colors = ['#f87171', '#fbbf24', '#34d399', '#60a5fa', '#c084fc', '#f472b6', '#a3e635', '#fde047']; segments.forEach((seg, i) => { const [x, y] = [50 + 50 * Math.cos(Math.PI / 180 * (angle * i)), 50 + 50 * Math.sin(Math.PI / 180 * (angle * i))]; svg += `<path d="M50 50 L${x} ${y} A50 50 0 0 1 ${50 + 50 * Math.cos(Math.PI / 180 * (angle * (i + 1)))} ${50 + 50 * Math.sin(Math.PI / 180 * (angle * (i + 1)))} Z" fill="${colors[i % colors.length]}"></path>`; const textAngle = angle * i + angle / 2; const [tx, ty] = [50 + 35 * Math.cos(Math.PI / 180 * textAngle), 50 + 35 * Math.sin(Math.PI / 180 * textAngle)]; svg += `<text x="${tx}" y="${ty}" transform="rotate(${textAngle + 90} ${tx} ${ty})" fill="white" text-anchor="middle" font-size="6" font-weight="bold">${seg.label}</text>`; }); svg += `</svg>`; const body = `<div id="spin-container"><div id="spin-marker"></div>${svg}</div>`; const actions = `<button class="modal-button-primary" id="spin-it-btn">Spin Now!</button>`; showModal("Daily Spin", body, actions); document.getElementById('spin-it-btn').addEventListener('click', async () => { document.getElementById('spin-it-btn').disabled = true; const p = Math.random(); let resultIndex; if (p < 0.6) resultIndex = Math.random() < 0.5 ? 1 : 3; else if (p < 0.95) resultIndex = 0; else if (p < 0.99) resultIndex = 2; else resultIndex = 4; const reward = segments[resultIndex].value; const totalRotations = 5 * 360; const targetAngle = -((angle * resultIndex) + (angle / 2) - (angle * 0.25) + (Math.random() * angle * 0.5)); const finalRotation = totalRotations + targetAngle; document.getElementById('wheel').style.transform = `rotate(${finalRotation}deg)`; setTimeout(async () => { try { await updateDoc(doc(db, "users", currentUser.uid), { balance: increment(reward), 'dailySpin.lastSpin': serverTimestamp() }); showModal("Congratulations!", `<p>You won ₹${reward.toFixed(2)}!</p>`); } catch (error) { handleError(error); } }, 5500); }); });
-// ================================
-// NEW WHATSAPP BIND SYSTEM (FINAL)
-// ================================
+// ==========================================
+//  STRICT BIND LOGIC (With Verification)
+// ==========================================
 document.getElementById('whatsapp-bind-btn').addEventListener('click', () => {
     if (!currentUser) return;
     
@@ -170,9 +170,7 @@ document.getElementById('whatsapp-bind-btn').addEventListener('click', () => {
         <input type="tel" id="whatsapp-input" placeholder="919876543210" maxlength="13">
         <p style="font-size:12px; color:gray; margin-top:5px;">Must include country code (e.g., 91)</p>
     `;
-    const actions =
-        `<button class="modal-button-secondary" onclick="closeModal()">Cancel</button>
-         <button class="modal-button-primary" id="submit-whatsapp">Get Code</button>`;
+    const actions = `<button class="modal-button-secondary" onclick="closeModal()">Cancel</button><button class="modal-button-primary" id="submit-whatsapp">Get Code</button>`;
     
     showModal("Bind Device", body, actions);
     
@@ -186,6 +184,7 @@ document.getElementById('whatsapp-bind-btn').addEventListener('click', () => {
         btn.disabled = true;
         
         try {
+            // 1. Request Pairing Code
             const res = await fetch('/api/earning/add-device', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -195,40 +194,85 @@ document.getElementById('whatsapp-bind-btn').addEventListener('click', () => {
                     phoneNumber: number
                 })
             });
-            
             const data = await res.json();
             
             if (data.success && data.pairingCode) {
-                
+                // 2. Show Pairing Code UI
                 const pairBody = `
                     <div style="text-align:center;">
                         <p>Open WhatsApp > Linked Devices > Link with phone number</p>
-                        <h2 style="font-size:32px; letter-spacing:5px; color:#f97316; font-weight:bold;">${data.pairingCode}</h2>
+                        <h2 style="font-size:32px; letter-spacing:5px; color:#f97316; margin:15px 0; font-weight:bold;">${data.pairingCode}</h2>
                         <p style="color:gray;">Enter this code in WhatsApp immediately.</p>
-                        <div id="connection-status" style="margin-top:10px; font-weight:bold; color:#f97316;">
-                            Waiting for connection...
+                        <div id="connection-status" style="margin-top:15px; font-weight:bold; color:#f97316; font-size: 1.1rem;">
+                            <i class="fas fa-spinner fa-spin"></i> Waiting for connection...
                         </div>
                     </div>
                 `;
+                // We remove the "I Connected" button because we will auto-detect
+                showModal("Pairing Code", pairBody, `<button class="modal-button-secondary" onclick="closeModal()">Cancel</button>`);
                 
-                showModal("Pairing Code", pairBody,
-                    `<button class="modal-button-primary" onclick="location.reload()">I Connected It</button>`);
-                
-                await updateDoc(doc(db, "users", currentUser.uid), {
-                    whatsAppNumber: number
-                });
+                // 3. START STRICT POLLING (Check if actually connected)
+                let attempts = 0;
+                const pollInterval = setInterval(async () => {
+                    attempts++;
+                    
+                    // Timeout after 2 minutes (40 attempts * 3 seconds)
+                    if (attempts > 40) {
+                        clearInterval(pollInterval);
+                        const statusEl = document.getElementById('connection-status');
+                        if (statusEl) {
+                            statusEl.innerHTML = '<span style="color:red">❌ Timeout. Pairing failed.</span>';
+                        }
+                        return;
+                    }
+                    
+                    try {
+                        // Check Backend Status
+                        const statusRes = await fetch('/api/whatsapp/status');
+                        const statusData = await statusRes.json();
+                        
+                        // Find our specific device
+                        const device = statusData.devices.find(d => d.phoneNumber === number || d.id === number);
+                        
+                        // 4. IF CONNECTED -> Update Firebase & UI
+                        if (device && device.connected === true) {
+                            clearInterval(pollInterval);
+                            
+                            const statusEl = document.getElementById('connection-status');
+                            if (statusEl) {
+                                statusEl.innerHTML = '<span style="color:#10B981">✅ Connected Successfully!</span>';
+                            }
+                            
+                            // NOW we save to Firebase because we verified it
+                            await updateDoc(doc(db, "users", currentUser.uid), { whatsAppNumber: number });
+                            
+                            setTimeout(() => {
+                                closeModal();
+                                location.reload(); // Reload to update UI state
+                            }, 2000);
+                        }
+                    } catch (err) {
+                        console.log("Polling...", err);
+                    }
+                }, 3000); // Check every 3 seconds
                 
             } else {
                 alert("Error: " + (data.error || "Failed to generate code"));
                 closeModal();
             }
-            
         } catch (e) {
             console.error(e);
             alert("Connection Error to Backend");
             closeModal();
         }
     });
+});
+
+document.getElementById('logout-btn').addEventListener('click', () => { signOut(auth); });
+
+// Swiper Init
+document.addEventListener('DOMContentLoaded', () => {
+    new Swiper(".mySwiper", { loop: true, autoplay: { delay: 3500 }, pagination: { el: ".swiper-pagination", clickable: true } });
 });
 
 document.getElementById('assign-sms-btn').addEventListener('click', async () => {
