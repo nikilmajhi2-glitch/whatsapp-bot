@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -67,9 +68,138 @@ func adminLoginCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 /* ---------------------------------------------------
+   STRONG ANTI-BAN SETTINGS
+   Tune these constants to your risk appetite.
+--------------------------------------------------- */
+
+// Global daily cap across all devices (sum)
+var DailyLimit = 200
+
+// Random per-message delay (seconds)
+var MinDelay = 3
+var MaxDelay = 7
+
+// Extra delay when message contains link
+var LinkMinDelay = 10
+var LinkMaxDelay = 18
+
+// Long break after N messages (simulates human pauses)
+var BreakEvery = 12
+var BreakMin = 35
+var BreakMax = 75
+
+// Silent hours (local server time) during which sending is blocked
+var SilentStart = 1 // 1 AM
+var SilentEnd = 6   // 6 AM
+
+// RNG helper: sleep for randomized seconds between min and max (inclusive)
+func randomDelay(min, max int) {
+	if max <= min {
+		time.Sleep(time.Duration(min) * time.Second)
+		return
+	}
+	d := time.Duration(min+rand.Intn(max-min+1)) * time.Second
+	time.Sleep(d)
+}
+
+// Human-like message variation to avoid identical payload detection.
+// Keep this small and natural — you can expand variations as needed.
+func humanize(msg string) string {
+	variants := []string{
+		msg,
+		msg + " 😊",
+		"Hi! " + msg,
+		msg + " 🙏",
+		strings.Replace(msg, "Hello", "Hi", 1),
+		strings.Replace(msg, "Hello", "Hey", 1),
+	}
+	return variants[rand.Intn(len(variants))]
+}
+
+/* ---------------------------------------------------
+   ANTI-BAN CONFIG STORAGE (ONLY FOR ADMIN UI)
+--------------------------------------------------- */
+
+type AntiBanSettings struct {
+	DailyLimit  int `json:"dailyLimit"`
+	MinDelay    int `json:"minDelay"`
+	MaxDelay    int `json:"maxDelay"`
+	LinkMin     int `json:"linkMin"`
+	LinkMax     int `json:"linkMax"`
+	BreakEvery  int `json:"breakEvery"`
+	BreakMin    int `json:"breakMin"`
+	BreakMax    int `json:"breakMax"`
+	SilentStart int `json:"silentStart"`
+	SilentEnd   int `json:"silentEnd"`
+}
+
+var AntiBanConfig AntiBanSettings
+
+// Load settings from file (if not exists create default file)
+func loadAntiBanConfig() {
+	data, err := os.ReadFile("antiban.json")
+	if err != nil {
+		AntiBanConfig = AntiBanSettings{
+			DailyLimit:  DailyLimit,
+			MinDelay:    MinDelay,
+			MaxDelay:    MaxDelay,
+			LinkMin:     LinkMinDelay,
+			LinkMax:     LinkMaxDelay,
+			BreakEvery:  BreakEvery,
+			BreakMin:    BreakMin,
+			BreakMax:    BreakMax,
+			SilentStart: SilentStart,
+			SilentEnd:   SilentEnd,
+		}
+		saveAntiBanConfig()
+		return
+	}
+	_ = json.Unmarshal(data, &AntiBanConfig)
+
+	// sync with globals
+	if AntiBanConfig.DailyLimit != 0 {
+		DailyLimit = AntiBanConfig.DailyLimit
+	}
+	if AntiBanConfig.MinDelay != 0 {
+		MinDelay = AntiBanConfig.MinDelay
+	}
+	if AntiBanConfig.MaxDelay != 0 {
+		MaxDelay = AntiBanConfig.MaxDelay
+	}
+	if AntiBanConfig.LinkMin != 0 {
+		LinkMinDelay = AntiBanConfig.LinkMin
+	}
+	if AntiBanConfig.LinkMax != 0 {
+		LinkMaxDelay = AntiBanConfig.LinkMax
+	}
+	if AntiBanConfig.BreakEvery != 0 {
+		BreakEvery = AntiBanConfig.BreakEvery
+	}
+	if AntiBanConfig.BreakMin != 0 {
+		BreakMin = AntiBanConfig.BreakMin
+	}
+	if AntiBanConfig.BreakMax != 0 {
+		BreakMax = AntiBanConfig.BreakMax
+	}
+	if AntiBanConfig.SilentStart != 0 {
+		SilentStart = AntiBanConfig.SilentStart
+	}
+	if AntiBanConfig.SilentEnd != 0 {
+		SilentEnd = AntiBanConfig.SilentEnd
+	}
+}
+
+// Save settings to file
+func saveAntiBanConfig() {
+	file, _ := json.MarshalIndent(AntiBanConfig, "", "  ")
+	_ = os.WriteFile("antiban.json", file, 0644)
+}
+
+/* ---------------------------------------------------
    STRUCTS
 --------------------------------------------------- */
 
+// Device has per-device anti-ban fields added
 type Device struct {
 	ID           string            `json:"id"`
 	PhoneNumber  string            `json:"phoneNumber"`
@@ -81,6 +211,12 @@ type Device struct {
 	Client       *whatsmeow.Client `json:"-"`
 	UserID       string            `json:"userId"`
 	CustomID     string            `json:"customId"`
+
+	// NEW ANTI-BAN FIELDS (per-device)
+	DailySent    int       `json:"dailySent"`
+	LastResetDay int       `json:"lastResetDay"`
+	Trust        int       `json:"trust"`
+	CreatedAt    time.Time `json:"createdAt"`
 }
 
 type Message struct {
@@ -106,13 +242,16 @@ type AddDeviceRequest struct {
 }
 
 type WhatsAppManager struct {
-	devices   map[string]*Device
-	mutex     sync.RWMutex
-	container *sqlstore.Container
-	db        *sql.DB
-	ctx       context.Context
-	msgQueue  chan Message
-	apiKey    string
+	devices      map[string]*Device
+	mutex        sync.RWMutex
+	container    *sqlstore.Container
+	db           *sql.DB
+	ctx          context.Context
+	msgQueue     chan Message
+	apiKey       string
+	DailySent    int
+	LastResetDay int
+	TrustScore   int
 }
 
 /* ---------------------------------------------------
@@ -134,14 +273,18 @@ func NewWhatsAppManager() *WhatsAppManager {
 	}
 
 	wm := &WhatsAppManager{
-		devices:   make(map[string]*Device),
-		container: container,
-		db:        db,
-		ctx:       ctx,
-		msgQueue:  make(chan Message, 2000),
-		apiKey:    getEnv("API_KEY", "your-secret-api-key-2024"),
+		devices:      make(map[string]*Device),
+		container:    container,
+		db:           db,
+		ctx:          ctx,
+		msgQueue:     make(chan Message, 3000),
+		apiKey:       getEnv("API_KEY", "your-secret-api-key-2024"),
+		DailySent:    0,
+		LastResetDay: time.Now().Day(),
+		TrustScore:   50,
 	}
 
+	loadAntiBanConfig() // load persisted admin settings (no change to logic)
 	wm.initDB()
 	wm.reconnectDevices()
 	go wm.processMessageQueue()
@@ -163,6 +306,63 @@ func (wm *WhatsAppManager) initDB() {
 		log.Fatal("DB Init failed:", err)
 	}
 }
+/* ---------------------------------------------------
+   DEVICE WARM-UP & TRUST HELPERS
+--------------------------------------------------- */
+
+// warmUpLimit returns a safe per-device daily cap based on device age in days.
+func warmUpLimit(device *Device) int {
+	if device == nil {
+		return 0
+	}
+	days := int(time.Since(device.CreatedAt).Hours() / 24)
+
+	switch {
+	case days <= 2:
+		return 20
+	case days <= 4:
+		return 40
+	case days <= 7:
+		return 75
+	case days <= 14:
+		return 120
+	default:
+		return 200
+	}
+}
+
+// deviceCanSend checks per-device warm-up and trust thresholds.
+func (wm *WhatsAppManager) deviceCanSend(device *Device) bool {
+	if device == nil {
+		return false
+	}
+	now := time.Now()
+
+	// Reset per-device daily counter at midnight
+	if device.LastResetDay != now.Day() {
+		device.DailySent = 0
+		device.LastResetDay = now.Day()
+		if device.Trust < 90 {
+			device.Trust += 5
+		}
+	}
+
+	// Warm-up limit
+	if device.DailySent >= warmUpLimit(device) {
+		return false
+	}
+
+	// If trust extremely low, block
+	if device.Trust < 25 {
+		return false
+	}
+
+	return true
+}
+
+/* ---------------------------------------------------
+   RECONNECT / CONNECT / HANDLERS
+--------------------------------------------------- */
 
 func (wm *WhatsAppManager) reconnectDevices() {
 	devices, err := wm.container.GetAllDevices(wm.ctx)
@@ -183,13 +383,17 @@ func (wm *WhatsAppManager) reconnectDevices() {
 		client := whatsmeow.NewClient(d, clientLog)
 
 		device := &Device{
-			ID:          phoneNumber,
-			PhoneNumber: phoneNumber,
-			Connected:   false,
-			Client:      client,
-			UserID:      userID,
-			CustomID:    customID,
-			LastUsed:    time.Now(),
+			ID:           phoneNumber,
+			PhoneNumber:  phoneNumber,
+			Connected:    false,
+			Client:       client,
+			UserID:       userID,
+			CustomID:     customID,
+			LastUsed:     time.Now(),
+			DailySent:    0,
+			LastResetDay: time.Now().Day(),
+			Trust:        50,
+			CreatedAt:    time.Now(),
 		}
 
 		wm.registerHandlers(client, device)
@@ -214,14 +418,18 @@ func (wm *WhatsAppManager) connectDevice(phoneNumber string, userID, customID st
 	client := whatsmeow.NewClient(deviceStore, clientLog)
 
 	device := &Device{
-		ID:          phoneNumber,
-		PhoneNumber: phoneNumber,
-		Connected:   false,
-		IsPairing:   true,
-		Client:      client,
-		LastUsed:    time.Now(),
-		UserID:      userID,
-		CustomID:    customID,
+		ID:           phoneNumber,
+		PhoneNumber:  phoneNumber,
+		Connected:    false,
+		IsPairing:    true,
+		Client:       client,
+		LastUsed:     time.Now(),
+		UserID:       userID,
+		CustomID:     customID,
+		DailySent:    0,
+		LastResetDay: time.Now().Day(),
+		Trust:        40,
+		CreatedAt:    time.Now(),
 	}
 
 	wm.registerHandlers(client, device)
@@ -245,11 +453,6 @@ func (wm *WhatsAppManager) connectDevice(phoneNumber string, userID, customID st
 	go wm.monitorPairing(device)
 	return device, nil
 }
-
-/* PART 1 END — WAIT FOR PART 2 */
-/* ---------------------------------------------------
-   REGISTER HANDLERS
---------------------------------------------------- */
 
 func (wm *WhatsAppManager) registerHandlers(client *whatsmeow.Client, device *Device) {
 	client.AddEventHandler(func(evt interface{}) {
@@ -319,46 +522,219 @@ func (wm *WhatsAppManager) handleIncomingMessage(device *Device, msg *events.Mes
 	)
 }
 
+// canSendNow returns whether it's okay to send right now (global daily cap, silent hours)
+func (wm *WhatsAppManager) canSendNow() bool {
+	now := time.Now()
+
+	wm.mutex.Lock()
+	// reset global daily counter at midnight (local server time)
+	if now.Day() != wm.LastResetDay {
+		wm.DailySent = 0
+		wm.LastResetDay = now.Day()
+		// slowly increase global trust score a bit each day
+		if wm.TrustScore < 80 {
+			wm.TrustScore += 5
+		}
+	}
+	daily := wm.DailySent
+	wm.mutex.Unlock()
+
+	// silent hours check (handles wrap-around)
+	if SilentStart <= SilentEnd {
+		if now.Hour() >= SilentStart && now.Hour() <= SilentEnd {
+			return false
+		}
+	} else {
+		if now.Hour() >= SilentStart || now.Hour() <= SilentEnd {
+			return false
+		}
+	}
+
+	// global daily cap
+	if daily >= DailyLimit {
+		return false
+	}
+
+	return true
+}
+
+/* ---------------------------------------------------
+   QUEUE + SENDER (unchanged logic)
+--------------------------------------------------- */
+
 func (wm *WhatsAppManager) processMessageQueue() {
+	// seed rng for randomization (ensure this runs once)
+	rand.Seed(time.Now().UnixNano())
+
+	msgCounter := 0
+
 	for msg := range wm.msgQueue {
-		wm.sendActualMessage(msg)
-		time.Sleep(1 * time.Second)
+
+		// Wait until both global & device safety allow sending
+		for {
+			// check global
+			if !wm.canSendNow() {
+				time.Sleep(15 * time.Second)
+				continue
+			}
+
+			// check device existence & per-device safety
+			wm.mutex.RLock()
+			dev := wm.devices[msg.DeviceID]
+			wm.mutex.RUnlock()
+
+			if dev != nil && wm.deviceCanSend(dev) {
+				break
+			}
+
+			// try to find any other device we can use
+			found := false
+			wm.mutex.RLock()
+			for _, d := range wm.devices {
+				if d.Connected && wm.deviceCanSend(d) {
+					found = true
+					break
+				}
+			}
+			wm.mutex.RUnlock()
+			if found {
+				break
+			}
+
+			time.Sleep(15 * time.Second)
+		}
+
+		// Pre-send checks: if message is malformed skip
+		if msg.PhoneNumber == "" || strings.TrimSpace(msg.MessageText) == "" {
+			wm.updateMsgStatus(msg.ID, "failed")
+			continue
+		}
+
+		// Send the message (sendActualMessage returns success)
+		success := wm.sendActualMessage(msg)
+
+		// Update counters & trust score
+		wm.mutex.Lock()
+		if success {
+			wm.DailySent++
+			msgCounter++
+			// small global trust bump occasionally
+			if wm.TrustScore < 100 && rand.Intn(100) < 20 {
+				wm.TrustScore++
+			}
+		} else {
+			// penalize global trust on failures
+			if wm.TrustScore > 10 {
+				wm.TrustScore -= 8
+			}
+		}
+		wm.mutex.Unlock()
+
+		// 1) Base human delay between messages
+		randomDelay(MinDelay, MaxDelay)
+
+		// 2) If message contains link, add extra delay
+		if strings.Contains(msg.MessageText, "http://") || strings.Contains(msg.MessageText, "https://") {
+			randomDelay(LinkMinDelay, LinkMaxDelay)
+		}
+
+		// 3) Long break after N messages to simulate human pause
+		if msgCounter%BreakEvery == 0 {
+			randomDelay(BreakMin, BreakMax)
+		}
+
+		// 4) Occasional human idle (10-20% chance)
+		if rand.Intn(100) < 15 {
+			randomDelay(20, 60)
+		}
+
+		// 5) If global trust low, enforce a cooldown
+		wm.mutex.RLock()
+		ts := wm.TrustScore
+		wm.mutex.RUnlock()
+		if ts < 40 {
+			randomDelay(30, 90)
+		}
 	}
 }
 
-func (wm *WhatsAppManager) sendActualMessage(message Message) {
+func (wm *WhatsAppManager) sendActualMessage(message Message) bool {
+	// find device requested
 	wm.mutex.RLock()
 	device, exists := wm.devices[message.DeviceID]
 	wm.mutex.RUnlock()
 
-	if !exists || !device.Connected {
+	// fallback to any connected device if the requested one is offline or not allowed
+	if !exists || !device.Connected || !wm.deviceCanSend(device) {
+		// attempt to rotate to another good device
+		wm.mutex.RLock()
 		for _, d := range wm.devices {
-			if d.Connected {
+			if d.Connected && wm.deviceCanSend(d) {
 				device = d
 				break
 			}
 		}
+		wm.mutex.RUnlock()
 	}
 
 	if device == nil || !device.Connected {
 		wm.updateMsgStatus(message.ID, "failed")
-		return
+		return false
 	}
 
-	jid, _ := types.ParseJID(message.PhoneNumber + "@s.whatsapp.net")
-	waMsg := &waE2E.Message{Conversation: proto.String(message.MessageText)}
+	// check again deviceCanSend before actual send (race safe)
+	if !wm.deviceCanSend(device) {
+		wm.updateMsgStatus(message.ID, "failed")
+		return false
+	}
 
-	_, err := device.Client.SendMessage(wm.ctx, jid, waMsg)
+	// Construct JID and a humanized message body
+	jid, err := types.ParseJID(strings.TrimSpace(message.PhoneNumber) + "@s.whatsapp.net")
 	if err != nil {
 		wm.updateMsgStatus(message.ID, "failed")
-		return
+		return false
 	}
 
+	finalText := humanize(message.MessageText)
+
+	waMsg := &waE2E.Message{Conversation: proto.String(finalText)}
+
+	// attempt send with a simple retry strategy (2 attempts)
+	ctx, cancel := context.WithTimeout(wm.ctx, 30*time.Second)
+	defer cancel()
+
+	_, err = device.Client.SendMessage(ctx, jid, waMsg)
+	if err != nil {
+		// first failure -> small random backoff then retry once
+		randomDelay(5, 12)
+		_, err2 := device.Client.SendMessage(wm.ctx, jid, waMsg)
+		if err2 != nil {
+			// permanent failure
+			wm.updateMsgStatus(message.ID, "failed")
+			// penalize device trust
+			wm.mutex.Lock()
+			if device.Trust > 5 {
+				device.Trust -= 5
+			}
+			wm.mutex.Unlock()
+			// log for diagnostics
+			log.Printf("Send failed to %s: %v / retry: %v\n", message.PhoneNumber, err, err2)
+			return false
+		}
+	}
+
+	// success: update device & DB
 	wm.mutex.Lock()
 	device.MessagesSent++
+	device.LastUsed = time.Now()
+	device.DailySent++
+	if device.Trust < 100 {
+		device.Trust += 2
+	}
 	wm.mutex.Unlock()
 
 	wm.updateMsgStatus(message.ID, "sent")
+	return true
 }
 
 func (wm *WhatsAppManager) updateMsgStatus(id, status string) {
@@ -386,7 +762,6 @@ func handleGetMessages(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(messages)
 }
-
 func handleSendSingle(w http.ResponseWriter, r *http.Request) {
 	var req Message
 	json.NewDecoder(r.Body).Decode(&req)
@@ -400,6 +775,7 @@ func handleSendSingle(w http.ResponseWriter, r *http.Request) {
 		VALUES (?,?,?,?,?,?)
 	`, req.ID, req.DeviceID, req.PhoneNumber, req.MessageText, req.Status, req.Timestamp)
 
+	// push to the queue (will be sent by anti-ban queue)
 	manager.msgQueue <- req
 
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
@@ -413,6 +789,7 @@ func handleSendBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// queue insertion is done in a goroutine so API returns quickly
 	go func() {
 		for _, phone := range req.PhoneNumbers {
 			phone = strings.TrimSpace(phone)
@@ -420,6 +797,7 @@ func handleSendBulk(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
+			// Create message with unique ID
 			msg := Message{
 				ID:          fmt.Sprintf("bulk_%d_%s", time.Now().UnixNano(), phone),
 				DeviceID:    req.DeviceID,
@@ -429,11 +807,13 @@ func handleSendBulk(w http.ResponseWriter, r *http.Request) {
 				Timestamp:   time.Now(),
 			}
 
+			// insert to DB immediately
 			manager.db.Exec(`
 				INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp)
 				VALUES (?,?,?,?,?,?)
 			`, msg.ID, msg.DeviceID, msg.PhoneNumber, msg.MessageText, msg.Status, msg.Timestamp)
 
+			// push into queue — anti-ban queue will pace sends
 			manager.msgQueue <- msg
 		}
 	}()
@@ -502,6 +882,88 @@ func handleRemoveDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 /* ---------------------------------------------------
+   ANTI-BAN API ROUTES (for admin panel)
+--------------------------------------------------- */
+
+func handleAntiBanGet(w http.ResponseWriter, r *http.Request) {
+	manager.mutex.RLock()
+	defer manager.mutex.RUnlock()
+
+	devices := []map[string]interface{}{}
+
+	for _, d := range manager.devices {
+		devices = append(devices, map[string]interface{}{
+			"id":    d.ID,
+			"phone": d.PhoneNumber,
+			"sent":  d.DailySent,
+			"limit": warmUpLimit(d),
+			"trust": d.Trust,
+		})
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"global":  AntiBanConfig,
+		"devices": devices,
+	})
+}
+
+func handleAntiBanSave(w http.ResponseWriter, r *http.Request) {
+	var cfg AntiBanSettings
+	json.NewDecoder(r.Body).Decode(&cfg)
+
+	AntiBanConfig = cfg
+	saveAntiBanConfig()
+
+	// Sync globals
+	if cfg.DailyLimit != 0 {
+		DailyLimit = cfg.DailyLimit
+	}
+	if cfg.MinDelay != 0 {
+		MinDelay = cfg.MinDelay
+	}
+	if cfg.MaxDelay != 0 {
+		MaxDelay = cfg.MaxDelay
+	}
+	if cfg.LinkMin != 0 {
+		LinkMinDelay = cfg.LinkMin
+	}
+	if cfg.LinkMax != 0 {
+		LinkMaxDelay = cfg.LinkMax
+	}
+	if cfg.BreakEvery != 0 {
+		BreakEvery = cfg.BreakEvery
+	}
+	if cfg.BreakMin != 0 {
+		BreakMin = cfg.BreakMin
+	}
+	if cfg.BreakMax != 0 {
+		BreakMax = cfg.BreakMax
+	}
+	if cfg.SilentStart != 0 {
+		SilentStart = cfg.SilentStart
+	}
+	if cfg.SilentEnd != 0 {
+		SilentEnd = cfg.SilentEnd
+	}
+
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func handleAntiBanResetDevice(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["deviceId"]
+
+	manager.mutex.Lock()
+	if d, ok := manager.devices[id]; ok {
+		d.DailySent = 0
+		d.Trust = 60
+		d.LastResetDay = time.Now().Day()
+	}
+	manager.mutex.Unlock()
+
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+/* ---------------------------------------------------
    MAIN
 --------------------------------------------------- */
 
@@ -516,6 +978,9 @@ func getEnv(key, fallback string) string {
 
 func main() {
 	manager = NewWhatsAppManager()
+
+	// Ensure rand seeded (NewWhatsAppManager also seeds, but double-safe)
+	rand.Seed(time.Now().UnixNano())
 
 	r := mux.NewRouter()
 
@@ -554,6 +1019,13 @@ func main() {
 	earning.HandleFunc("/remove-device/{deviceId}", handleRemoveDevice).Methods("DELETE")
 
 	// ---------------------------
+	// ANTI-BAN API ROUTES
+	// ---------------------------
+	api.HandleFunc("/antiban/get", handleAntiBanGet).Methods("GET")
+	api.HandleFunc("/antiban/save", handleAntiBanSave).Methods("POST")
+	api.HandleFunc("/antiban/reset-device/{deviceId}", handleAntiBanResetDevice).Methods("POST")
+
+	// ---------------------------
 	// ADMIN PAGE PROTECTION
 	// ---------------------------
 	r.PathPrefix("/admin/").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -580,7 +1052,11 @@ func main() {
 	fmt.Printf("\n👑 Admin Panel: http://localhost:%s/admin/admin.html\n\n", port)
 
 	srv := &http.Server{Addr: ":" + port, Handler: r}
-	go srv.ListenAndServe()
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("ListenAndServe(): %v", err)
+		}
+	}()
 
 	// Shutdown
 	c := make(chan os.Signal, 1)
@@ -589,8 +1065,5 @@ func main() {
 
 	manager.db.Close()
 	fmt.Println("Shutting down...")
+	srv.Close()
 }
-
-/* ----------------------------------------------
-   END OF FILE — MAIN.GO COMPLETE
----------------------------------------------- */

@@ -7,29 +7,40 @@
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        .active-tab { background-color: #10B981; color: white; }
+        .active-tab { background-color: #10B981 !important; color: white !important; }
     </style>
 </head>
 <body class="bg-gray-100 font-sans h-screen flex overflow-hidden">
 
+    <!-- SIDEBAR -->
     <div class="w-64 bg-gray-900 text-white flex flex-col flex-shrink-0 transition-all duration-300">
         <div class="p-5 font-bold text-2xl border-b border-gray-700 flex items-center">
             <i class="fab fa-whatsapp text-green-400 mr-2"></i> MASTER
         </div>
+
         <nav class="flex-1 p-4 space-y-2">
             <button onclick="showTab('devices')" id="tab-btn-devices" class="w-full text-left py-3 px-4 rounded hover:bg-gray-800 transition active-tab">
                 <i class="fas fa-server mr-3"></i> Device Manager
             </button>
+
             <button onclick="showTab('single')" id="tab-btn-single" class="w-full text-left py-3 px-4 rounded hover:bg-gray-800 transition">
                 <i class="fas fa-paper-plane mr-3"></i> Send Single
             </button>
+
             <button onclick="showTab('bulk')" id="tab-btn-bulk" class="w-full text-left py-3 px-4 rounded hover:bg-gray-800 transition">
                 <i class="fas fa-mail-bulk mr-3"></i> Bulk Campaign
             </button>
+
             <button onclick="showTab('logs')" id="tab-btn-logs" class="w-full text-left py-3 px-4 rounded hover:bg-gray-800 transition">
                 <i class="fas fa-history mr-3"></i> Message Logs
             </button>
+
+            <!-- NEW ANTI-BAN TAB -->
+            <button onclick="showTab('antiban')" id="tab-btn-antiban" class="w-full text-left py-3 px-4 rounded hover:bg-gray-800 transition">
+                <i class="fas fa-shield-alt mr-3"></i> Anti-Ban Control
+            </button>
         </nav>
+
         <div class="p-4 bg-gray-800">
             <a href="/" target="_blank" class="text-sm text-gray-400 hover:text-white flex items-center">
                 <i class="fas fa-external-link-alt mr-2"></i> Open User Panel
@@ -37,7 +48,9 @@
         </div>
     </div>
 
+    <!-- MAIN PANEL -->
     <div class="flex-1 flex flex-col overflow-hidden">
+
         <header class="bg-white shadow p-4 flex justify-between items-center z-10">
             <h2 class="text-xl font-bold text-gray-800" id="page-title">Device Manager</h2>
             <div class="flex items-center space-x-2">
@@ -49,6 +62,7 @@
 
         <main class="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-6">
 
+            <!-- DEVICE MANAGER -->
             <div id="tab-devices" class="tab-content">
                 <div class="bg-white rounded-lg shadow overflow-hidden">
                     <table class="min-w-full leading-normal">
@@ -61,12 +75,12 @@
                                 <th class="px-5 py-3 text-right">Actions</th>
                             </tr>
                         </thead>
-                        <tbody id="device-list">
-                            </tbody>
+                        <tbody id="device-list"></tbody>
                     </table>
                 </div>
             </div>
 
+            <!-- SEND SINGLE -->
             <div id="tab-single" class="tab-content hidden">
                 <div class="max-w-2xl mx-auto bg-white rounded-lg shadow p-8">
                     <div class="mb-4">
@@ -75,60 +89,69 @@
                             <option value="">Auto (Pick Best Available)</option>
                         </select>
                     </div>
+
                     <div class="mb-4">
                         <label class="block text-gray-700 font-bold mb-2">Recipient Number</label>
                         <input type="text" id="single-to" placeholder="919876543210" class="w-full p-3 border rounded">
                     </div>
+
                     <div class="mb-6">
                         <label class="block text-gray-700 font-bold mb-2">Message</label>
                         <textarea id="single-msg" rows="4" class="w-full p-3 border rounded"></textarea>
                     </div>
+
                     <button onclick="sendSingle()" class="w-full bg-green-500 text-white font-bold py-3 rounded hover:bg-green-600">
                         Send Message
                     </button>
                 </div>
             </div>
 
+            <!-- BULK CAMPAIGN -->
             <div id="tab-bulk" class="tab-content hidden">
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div class="md:col-span-2">
                         <div class="bg-white rounded-lg shadow p-6">
+
                             <h3 class="text-lg font-bold mb-4">Bulk Sender</h3>
-                            
+
                             <label class="block text-gray-700 font-bold mb-2">Sender Device</label>
                             <select id="bulk-device" class="w-full p-3 border rounded bg-gray-50 mb-4">
                                 <option value="">Auto (Rotate Available)</option>
                             </select>
 
                             <label class="block text-gray-700 font-bold mb-2">Phone Numbers (One per line)</label>
-                            <textarea id="bulk-numbers" rows="10" placeholder="919999999999&#10;918888888888&#10;917777777777" class="w-full p-3 border rounded bg-gray-50 mb-4 font-mono text-sm"></textarea>
-                            
+                            <textarea id="bulk-numbers" rows="10" class="w-full p-3 border rounded bg-gray-50 mb-4 font-mono text-sm"></textarea>
+
                             <label class="block text-gray-700 font-bold mb-2">Message Content</label>
                             <textarea id="bulk-msg" rows="3" class="w-full p-3 border rounded mb-4"></textarea>
 
                             <button onclick="sendBulk()" class="w-full bg-purple-600 text-white font-bold py-3 rounded hover:bg-purple-700">
                                 <i class="fas fa-rocket mr-2"></i> Launch Bulk Campaign
                             </button>
+
                         </div>
                     </div>
+
                     <div class="md:col-span-1">
                         <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
                             <p class="font-bold text-yellow-700">⚠️ Anti-Ban Tips</p>
                             <ul class="list-disc list-inside text-sm text-yellow-600 mt-2">
-                                <li>Don't send more than 50 msgs/hour per device.</li>
-                                <li>Use "Auto" to rotate devices if you have multiple.</li>
-                                <li>Ensure numbers are valid with country code.</li>
+                                <li>Do not send 50+ messages/hour per device.</li>
+                                <li>Use AUTO mode for device rotation.</li>
+                                <li>Use multiple devices for large campaigns.</li>
                             </ul>
                         </div>
                     </div>
+
                 </div>
             </div>
 
+            <!-- MESSAGE LOGS -->
             <div id="tab-logs" class="tab-content hidden">
                 <div class="bg-white rounded-lg shadow overflow-hidden">
-                    <table class="min-w-full leading-normal">
-                        <thead>
-                            <tr class="bg-gray-200 text-gray-600 text-xs uppercase">
+                    <table class="min-w-full leading-normal text-sm">
+                        <thead class="bg-gray-200 text-gray-600 text-xs uppercase">
+                            <tr>
                                 <th class="px-5 py-3">Time</th>
                                 <th class="px-5 py-3">Device</th>
                                 <th class="px-5 py-3">Target</th>
@@ -136,123 +159,300 @@
                                 <th class="px-5 py-3">Status</th>
                             </tr>
                         </thead>
-                        <tbody id="logs-list" class="text-sm"></tbody>
+                        <tbody id="logs-list"></tbody>
                     </table>
                 </div>
+            </div>
+
+            <!-- ANTI-BAN CONTROL TAB -->
+            <div id="tab-antiban" class="tab-content hidden">
+
+                <div class="max-w-3xl mx-auto bg-white rounded-lg shadow p-6 space-y-6">
+
+                    <h3 class="text-xl font-bold text-green-700 flex items-center">
+                        <i class="fas fa-shield-alt mr-2"></i> WhatsApp Anti-Ban Master Controls
+                    </h3>
+
+                    <!-- GLOBAL SETTINGS -->
+                    <div class="border p-4 rounded-lg bg-gray-50">
+                        <h4 class="font-bold mb-2">Global Settings</h4>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                            <div>
+                                <label class="font-semibold">Global Daily Limit</label>
+                                <input id="ab-global-limit" type="number" class="w-full p-2 border rounded">
+                            </div>
+
+                            <div>
+                                <label class="font-semibold">Min Delay (sec)</label>
+                                <input id="ab-min-delay" type="number" class="w-full p-2 border rounded">
+                            </div>
+
+                            <div>
+                                <label class="font-semibold">Max Delay (sec)</label>
+                                <input id="ab-max-delay" type="number" class="w-full p-2 border rounded">
+                            </div>
+
+                            <div>
+                                <label class="font-semibold">Link Delay Min (sec)</label>
+                                <input id="ab-link-min" type="number" class="w-full p-2 border rounded">
+                            </div>
+
+                            <div>
+                                <label class="font-semibold">Link Delay Max (sec)</label>
+                                <input id="ab-link-max" type="number" class="w-full p-2 border rounded">
+                            </div>
+
+                            <div>
+                                <label class="font-semibold">Break Every</label>
+                                <input id="ab-break-every" type="number" class="w-full p-2 border rounded">
+                            </div>
+
+                            <div>
+                                <label class="font-semibold">Break Min</label>
+                                <input id="ab-break-min" type="number" class="w-full p-2 border rounded">
+                            </div>
+
+                            <div>
+                                <label class="font-semibold">Break Max</label>
+                                <input id="ab-break-max" type="number" class="w-full p-2 border rounded">
+                            </div>
+
+                            <div>
+                                <label class="font-semibold">Silent Start</label>
+                                <input id="ab-silent-start" type="number" class="w-full p-2 border rounded">
+                            </div>
+
+                            <div>
+                                <label class="font-semibold">Silent End</label>
+                                <input id="ab-silent-end" type="number" class="w-full p-2 border rounded">
+                            </div>
+
+                        </div>
+
+                        <button onclick="saveAntiBan()" class="mt-4 bg-green-600 text-white px-4 py-3 rounded hover:bg-green-700">
+                            Save Settings
+                        </button>
+                    </div>
+
+                    <!-- PER-DEVICE WARM-UP + TRUST -->
+                    <div class="border p-4 rounded-lg bg-gray-50">
+                        <h4 class="font-bold mb-4">Per-Device Daily Limit, Warm-Up & Trust</h4>
+
+                        <table class="min-w-full leading-normal text-sm">
+                            <thead class="bg-gray-800 text-white">
+                                <tr>
+                                    <th class="px-4 py-2">Device</th>
+                                    <th class="px-4 py-2">Daily Sent</th>
+                                    <th class="px-4 py-2">Warm-Up Limit</th>
+                                    <th class="px-4 py-2">Trust</th>
+                                    <th class="px-4 py-2">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ab-device-table"></tbody>
+                        </table>
+
+                    </div>
+
+                </div>
+
             </div>
 
         </main>
     </div>
 
+    <!-- SCRIPT SECTION -->
     <script>
         document.addEventListener('DOMContentLoaded', loadAllData);
 
-        function showTab(tabName) {
-            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-            document.querySelectorAll('nav button').forEach(el => el.classList.remove('active-tab', 'bg-gray-800'));
-            
-            document.getElementById(`tab-${tabName}`).classList.remove('hidden');
-            document.getElementById(`tab-btn-${tabName}`).classList.add('active-tab', 'bg-gray-800');
-            
-            const titles = { 'devices': 'Device Manager', 'single': 'Send Single Message', 'bulk': 'Bulk Campaign Launcher', 'logs': 'System Logs' };
-            document.getElementById('page-title').innerText = titles[tabName];
+        function showTab(name) {
+            document.querySelectorAll('.tab-content').forEach(e => e.classList.add('hidden'));
+            document.querySelectorAll('nav button').forEach(e => e.classList.remove('active-tab'));
+
+            document.getElementById('tab-' + name).classList.remove('hidden');
+            document.getElementById('tab-btn-' + name).classList.add('active-tab');
+
+            const t = {
+                devices: "Device Manager",
+                single: "Send Single Message",
+                bulk: "Bulk Campaign Launcher",
+                logs: "Message Logs",
+                antiban: "Anti-Ban Control Panel"
+            };
+
+            document.getElementById('page-title').innerText = t[name];
+
             loadAllData();
+            if (name === "antiban") loadAntiBan();
         }
 
         async function loadAllData() {
             const res = await fetch('/api/whatsapp/status');
             const data = await res.json();
-            
-            const deviceList = document.getElementById('device-list');
+
+            const list = document.getElementById('device-list');
             const selects = [document.getElementById('single-device'), document.getElementById('bulk-device')];
-            
-            selects.forEach(s => s.innerHTML = '<option value="">Auto (Best Available)</option>');
-            deviceList.innerHTML = '';
+
+            list.innerHTML = "";
+            selects.forEach(s => s.innerHTML = '<option value="">Auto</option>');
 
             data.devices.forEach(d => {
-                const statusHtml = d.connected 
-                    ? '<span class="px-2 py-1 font-semibold leading-tight text-green-900 bg-green-200 rounded-full">Online</span>'
-                    : '<span class="px-2 py-1 font-semibold leading-tight text-red-900 bg-red-200 rounded-full">Offline</span>';
-                
-                deviceList.innerHTML += `
-                    <tr class="border-b border-gray-200 hover:bg-gray-100">
-                        <td class="px-5 py-4 bg-white text-sm font-bold">${d.phoneNumber}</td>
-                        <td class="px-5 py-4 bg-white text-sm">${d.userId || 'System'}</td>
-                        <td class="px-5 py-4 bg-white text-sm">${statusHtml}</td>
-                        <td class="px-5 py-4 bg-white text-sm">${d.messagesSent}</td>
-                        <td class="px-5 py-4 bg-white text-sm text-right">
-                            <button onclick="deleteDevice('${d.id}')" class="bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-3 rounded text-xs">DELETE / LOGOUT</button>
+                const st = d.connected
+                    ? '<span class="px-2 py-1 text-green-900 bg-green-200 rounded-full">Online</span>'
+                    : '<span class="px-2 py-1 text-red-900 bg-red-200 rounded-full">Offline</span>';
+
+                list.innerHTML += `
+                    <tr class="border-b">
+                        <td class="px-5 py-3">${d.phoneNumber}</td>
+                        <td class="px-5 py-3">${d.userId || "System"}</td>
+                        <td class="px-5 py-3">${st}</td>
+                        <td class="px-5 py-3">${d.messagesSent}</td>
+                        <td class="px-5 py-3 text-right">
+                            <button onclick="deleteDevice('${d.id}')" class="bg-red-500 text-white px-3 py-1 rounded">Delete</button>
                         </td>
                     </tr>
                 `;
 
-                if(d.connected) {
+                if (d.connected) {
                     selects.forEach(s => {
-                        const opt = document.createElement('option');
-                        opt.value = d.id;
-                        opt.innerText = `${d.phoneNumber} (${d.userId || 'Admin'})`;
-                        s.appendChild(opt);
+                        const o = document.createElement('option');
+                        o.value = d.id;
+                        o.innerText = `${d.phoneNumber} (${d.userId || 'Admin'})`;
+                        s.appendChild(o);
                     });
                 }
             });
 
-            const logRes = await fetch('/api/messages');
-            const logs = await logRes.json();
-            const logList = document.getElementById('logs-list');
-            logList.innerHTML = '';
-            
+            // Logs
+            const logs = await fetch('/api/messages').then(r => r.json());
+            const logBox = document.getElementById('logs-list');
+            logBox.innerHTML = "";
+
             logs.forEach(l => {
-                logList.innerHTML += `
-                    <tr class="border-b border-gray-200">
-                        <td class="px-5 py-2 bg-white text-gray-500">${new Date(l.timestamp).toLocaleTimeString()}</td>
-                        <td class="px-5 py-2 bg-white font-mono">${l.deviceId || '-'}</td>
-                        <td class="px-5 py-2 bg-white font-bold">${l.phoneNumber}</td>
-                        <td class="px-5 py-2 bg-white truncate max-w-xs" title="${l.messageText}">${l.messageText}</td>
-                        <td class="px-5 py-2 bg-white capitalize">${l.status}</td>
+                logBox.innerHTML += `
+                    <tr class="border-b">
+                        <td class="px-5 py-2 text-gray-600">${new Date(l.timestamp).toLocaleTimeString()}</td>
+                        <td class="px-5 py-2 font-mono">${l.deviceId || '-'}</td>
+                        <td class="px-5 py-2">${l.phoneNumber}</td>
+                        <td class="px-5 py-2 truncate">${l.messageText}</td>
+                        <td class="px-5 py-2 capitalize">${l.status}</td>
                     </tr>
                 `;
             });
         }
 
+        // DEVICE DELETE
         async function deleteDevice(id) {
-            if(!confirm("Are you sure? This will disconnect the device and delete it from the system.")) return;
-            await fetch(`/api/earning/remove-device/${id}`, { method: 'DELETE' });
+            if (!confirm("Remove device permanently?")) return;
+            await fetch(`/api/earning/remove-device/${id}`, { method: "DELETE" });
             loadAllData();
         }
 
+        // SEND SINGLE
         async function sendSingle() {
-            const deviceId = document.getElementById('single-device').value;
-            const phone = document.getElementById('single-to').value;
+            const d = document.getElementById('single-device').value;
+            const to = document.getElementById('single-to').value;
             const msg = document.getElementById('single-msg').value;
 
-            if(!phone || !msg) return alert("Fill all fields");
+            if (!to || !msg) return alert("Required fields missing.");
 
-            const res = await fetch('/api/whatsapp/send', {
-                method: 'POST',
-                body: JSON.stringify({ deviceId, phoneNumber: phone, messageText: msg })
+            await fetch('/api/whatsapp/send', {
+                method: "POST",
+                body: JSON.stringify({ deviceId: d, phoneNumber: to, messageText: msg })
             });
-            
-            if(res.ok) { alert("Sent!"); document.getElementById('single-msg').value = ''; showTab('logs'); } else { alert("Failed"); }
+
+            alert("Message sent!");
+            loadAllData();
         }
 
+        // SEND BULK
         async function sendBulk() {
-            const deviceId = document.getElementById('bulk-device').value;
-            const numbersRaw = document.getElementById('bulk-numbers').value;
+            const d = document.getElementById('bulk-device').value;
+            const raw = document.getElementById('bulk-numbers').value;
             const msg = document.getElementById('bulk-msg').value;
 
-            if(!numbersRaw || !msg) return alert("Fill numbers and message");
+            if (!raw || !msg) return alert("Required fields missing.");
 
-            const numbers = numbersRaw.split(/[\n,]+/).map(n => n.trim()).filter(n => n.length > 5);
+            const numbers = raw.split(/\n|,/).map(n => n.trim()).filter(n => n.length > 6);
 
             const res = await fetch('/api/whatsapp/bulk', {
-                method: 'POST',
-                body: JSON.stringify({ deviceId, phoneNumbers: numbers, message: msg })
+                method: "POST",
+                body: JSON.stringify({ deviceId: d, phoneNumbers: numbers, message: msg })
             });
-            
+
             const data = await res.json();
             alert(data.message);
             showTab('logs');
         }
+
+        /* -----------------------------
+              ANTI-BAN CONTROL
+        ------------------------------*/
+
+        async function loadAntiBan() {
+            const res = await fetch('/api/antiban/get');
+            const d = await res.json();
+
+            document.getElementById("ab-global-limit").value = d.global.dailyLimit;
+            document.getElementById("ab-min-delay").value = d.global.minDelay;
+            document.getElementById("ab-max-delay").value = d.global.maxDelay;
+            document.getElementById("ab-link-min").value = d.global.linkMin;
+            document.getElementById("ab-link-max").value = d.global.linkMax;
+            document.getElementById("ab-break-every").value = d.global.breakEvery;
+            document.getElementById("ab-break-min").value = d.global.breakMin;
+            document.getElementById("ab-break-max").value = d.global.breakMax;
+            document.getElementById("ab-silent-start").value = d.global.silentStart;
+            document.getElementById("ab-silent-end").value = d.global.silentEnd;
+
+            const table = document.getElementById("ab-device-table");
+            table.innerHTML = "";
+
+            d.devices.forEach(dev => {
+                table.innerHTML += `
+                    <tr class="border-b">
+                        <td class="px-4 py-2">${dev.phone}</td>
+                        <td class="px-4 py-2 text-center">${dev.sent}</td>
+                        <td class="px-4 py-2 text-center">${dev.limit}</td>
+                        <td class="px-4 py-2 text-center">${dev.trust}</td>
+                        <td class="px-4 py-2 text-center">
+                            <button onclick="resetDevice('${dev.id}')" class="bg-blue-600 text-white px-3 py-1 rounded">
+                                Reset
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        async function saveAntiBan() {
+            const body = {
+                dailyLimit: +document.getElementById("ab-global-limit").value,
+                minDelay: +document.getElementById("ab-min-delay").value,
+                maxDelay: +document.getElementById("ab-max-delay").value,
+                linkMin: +document.getElementById("ab-link-min").value,
+                linkMax: +document.getElementById("ab-link-max").value,
+                breakEvery: +document.getElementById("ab-break-every").value,
+                breakMin: +document.getElementById("ab-break-min").value,
+                breakMax: +document.getElementById("ab-break-max").value,
+                silentStart: +document.getElementById("ab-silent-start").value,
+                silentEnd: +document.getElementById("ab-silent-end").value,
+            };
+
+            await fetch('/api/antiban/save', {
+                method: "POST",
+                body: JSON.stringify(body)
+            });
+
+            alert("Anti-ban settings saved.");
+        }
+
+        async function resetDevice(id) {
+            await fetch('/api/antiban/reset-device/' + id, { method: "POST" });
+            alert("Device reset!");
+            loadAntiBan();
+        }
     </script>
+
 </body>
 </html>
