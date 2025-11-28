@@ -26,7 +26,49 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// --- Structs ---
+/* ---------------------------------------------------
+   ADMIN LOGIN CONFIG (LOCAL BACKEND LOGIN)
+--------------------------------------------------- */
+
+var masterAdminEmail = "admin@rupeedesk.com"
+var masterAdminPassword = "admin@6371" // Change anytime
+
+// Admin Login API
+func adminLogin(w http.ResponseWriter, r *http.Request) {
+	var data struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	json.NewDecoder(r.Body).Decode(&data)
+
+	if data.Email == masterAdminEmail && data.Password == masterAdminPassword {
+		http.SetCookie(w, &http.Cookie{
+			Name:   "adminSession",
+			Value:  "authenticated",
+			MaxAge: 86400, // 1 day
+			Path:   "/",
+		})
+		w.Write([]byte(`{"status":"ok","role":"admin"}`))
+		return
+	}
+
+	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+}
+
+// Protect admin.html
+func adminLoginCheck(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie("adminSession")
+	if err != nil || c.Value != "authenticated" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.Write([]byte(`{"status":"ok"}`))
+}
+
+/* ---------------------------------------------------
+   STRUCTS
+--------------------------------------------------- */
 
 type Device struct {
 	ID           string            `json:"id"`
@@ -73,12 +115,14 @@ type WhatsAppManager struct {
 	apiKey    string
 }
 
-// --- Initialization ---
+/* ---------------------------------------------------
+   INITIALIZATION
+--------------------------------------------------- */
 
 func NewWhatsAppManager() *WhatsAppManager {
 	ctx := context.Background()
 	dbLog := waLog.Stdout("Database", "ERROR", true)
-	
+
 	container, err := sqlstore.New(ctx, "sqlite3", "file:whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		log.Fatal("Failed store:", err)
@@ -125,17 +169,19 @@ func (wm *WhatsAppManager) reconnectDevices() {
 	if err != nil {
 		return
 	}
-	
+
 	for _, d := range devices {
-		if d.ID == nil { continue }
-		phoneNumber := d.ID.User 
-		
+		if d.ID == nil {
+			continue
+		}
+		phoneNumber := d.ID.User
+
 		var userID, customID string
 		wm.db.QueryRow("SELECT user_id, custom_id FROM earning_users WHERE phone_number = ?", phoneNumber).Scan(&userID, &customID)
 
 		clientLog := waLog.Stdout("Client-"+phoneNumber, "ERROR", true)
 		client := whatsmeow.NewClient(d, clientLog)
-		
+
 		device := &Device{
 			ID:          phoneNumber,
 			PhoneNumber: phoneNumber,
@@ -148,7 +194,7 @@ func (wm *WhatsAppManager) reconnectDevices() {
 
 		wm.registerHandlers(client, device)
 		client.Connect()
-		
+
 		wm.mutex.Lock()
 		wm.devices[phoneNumber] = device
 		wm.mutex.Unlock()
@@ -200,22 +246,31 @@ func (wm *WhatsAppManager) connectDevice(phoneNumber string, userID, customID st
 	return device, nil
 }
 
+/* PART 1 END — WAIT FOR PART 2 */
+/* ---------------------------------------------------
+   REGISTER HANDLERS
+--------------------------------------------------- */
+
 func (wm *WhatsAppManager) registerHandlers(client *whatsmeow.Client, device *Device) {
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
+
 		case *events.Connected:
 			wm.mutex.Lock()
 			device.Connected = true
 			device.IsPairing = false
 			wm.mutex.Unlock()
+
 		case *events.Disconnected:
 			wm.mutex.Lock()
 			device.Connected = false
 			wm.mutex.Unlock()
+
 		case *events.Message:
 			if !v.Info.IsFromMe && device.UserID != "" {
 				wm.handleIncomingMessage(device, v)
 			}
+
 		case *events.PairSuccess:
 			wm.mutex.Lock()
 			device.Connected = true
@@ -228,7 +283,7 @@ func (wm *WhatsAppManager) registerHandlers(client *whatsmeow.Client, device *De
 
 func (wm *WhatsAppManager) monitorPairing(device *Device) {
 	for i := 0; i < 120; i++ {
-		time.Sleep(1 * time.Second)
+		time.Sleep(time.Second)
 		if device.Client.Store.ID != nil {
 			wm.mutex.Lock()
 			device.Connected = true
@@ -240,18 +295,28 @@ func (wm *WhatsAppManager) monitorPairing(device *Device) {
 	}
 }
 
+/* ---------------------------------------------------
+   MESSAGE HANDLING
+--------------------------------------------------- */
+
 func (wm *WhatsAppManager) handleIncomingMessage(device *Device, msg *events.Message) {
-	var messageText string
+	var body string
+
 	if msg.Message.GetConversation() != "" {
-		messageText = msg.Message.GetConversation()
+		body = msg.Message.GetConversation()
 	} else if msg.Message.GetExtendedTextMessage() != nil {
-		messageText = msg.Message.GetExtendedTextMessage().GetText()
+		body = msg.Message.GetExtendedTextMessage().GetText()
 	}
 
-	wm.db.Exec("INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp) VALUES (?,?,?,?,?,?)",
-		fmt.Sprintf("in_%d", msg.Info.Timestamp.UnixNano()), device.ID, msg.Info.Sender.User, messageText, "received", time.Now())
-
-	log.Printf("💰 Msg received on %s: %s", device.PhoneNumber, messageText)
+	wm.db.Exec(
+		"INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp) VALUES (?,?,?,?,?,?)",
+		fmt.Sprintf("in_%d", msg.Info.Timestamp.UnixNano()),
+		device.ID,
+		msg.Info.Sender.User,
+		body,
+		"received",
+		time.Now(),
+	)
 }
 
 func (wm *WhatsAppManager) processMessageQueue() {
@@ -292,50 +357,69 @@ func (wm *WhatsAppManager) sendActualMessage(message Message) {
 	wm.mutex.Lock()
 	device.MessagesSent++
 	wm.mutex.Unlock()
+
 	wm.updateMsgStatus(message.ID, "sent")
 }
 
 func (wm *WhatsAppManager) updateMsgStatus(id, status string) {
-	wm.db.Exec("UPDATE messages SET status = ?, sent_at = ? WHERE id = ?", status, time.Now(), id)
+	wm.db.Exec("UPDATE messages SET status=?, sent_at=? WHERE id=?", status, time.Now(), id)
 }
 
-// --- API Handlers ---
+/* ---------------------------------------------------
+   API HANDLERS
+--------------------------------------------------- */
 
 func handleGetMessages(w http.ResponseWriter, r *http.Request) {
-	rows, _ := manager.db.Query("SELECT id, device_id, phone_number, message_text, status, timestamp FROM messages ORDER BY timestamp DESC LIMIT 100")
+	rows, _ := manager.db.Query(`
+		SELECT id, device_id, phone_number, message_text, status, timestamp 
+		FROM messages ORDER BY timestamp DESC LIMIT 200
+	`)
 	defer rows.Close()
 
 	var messages []Message
+
 	for rows.Next() {
 		var m Message
 		rows.Scan(&m.ID, &m.DeviceID, &m.PhoneNumber, &m.MessageText, &m.Status, &m.Timestamp)
 		messages = append(messages, m)
 	}
+
 	json.NewEncoder(w).Encode(messages)
 }
 
 func handleSendSingle(w http.ResponseWriter, r *http.Request) {
 	var req Message
 	json.NewDecoder(r.Body).Decode(&req)
+
 	req.ID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	req.Status = "pending"
 	req.Timestamp = time.Now()
-	manager.db.Exec("INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp) VALUES (?,?,?,?,?,?)",
-		req.ID, req.DeviceID, req.PhoneNumber, req.MessageText, "pending", req.Timestamp)
+
+	manager.db.Exec(`
+		INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp) 
+		VALUES (?,?,?,?,?,?)
+	`, req.ID, req.DeviceID, req.PhoneNumber, req.MessageText, req.Status, req.Timestamp)
+
 	manager.msgQueue <- req
+
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
 func handleSendBulk(w http.ResponseWriter, r *http.Request) {
 	var req BulkRequest
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", 400)
 		return
 	}
+
 	go func() {
 		for _, phone := range req.PhoneNumbers {
 			phone = strings.TrimSpace(phone)
-			if phone == "" { continue }
+			if phone == "" {
+				continue
+			}
+
 			msg := Message{
 				ID:          fmt.Sprintf("bulk_%d_%s", time.Now().UnixNano(), phone),
 				DeviceID:    req.DeviceID,
@@ -344,103 +428,169 @@ func handleSendBulk(w http.ResponseWriter, r *http.Request) {
 				Status:      "pending",
 				Timestamp:   time.Now(),
 			}
-			manager.db.Exec("INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp) VALUES (?,?,?,?,?,?)",
-				msg.ID, msg.DeviceID, msg.PhoneNumber, msg.MessageText, "pending", msg.Timestamp)
+
+			manager.db.Exec(`
+				INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp)
+				VALUES (?,?,?,?,?,?)
+			`, msg.ID, msg.DeviceID, msg.PhoneNumber, msg.MessageText, msg.Status, msg.Timestamp)
+
 			manager.msgQueue <- msg
 		}
 	}()
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": fmt.Sprintf("Queued %d messages", len(req.PhoneNumbers))})
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("Queued %d messages", len(req.PhoneNumbers)),
+	})
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	manager.mutex.RLock()
 	defer manager.mutex.RUnlock()
+
 	list := make([]*Device, 0)
+
 	for _, d := range manager.devices {
 		list = append(list, d)
 	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{"devices": list})
 }
 
 func handleAddDevice(w http.ResponseWriter, r *http.Request) {
 	var req AddDeviceRequest
 	json.NewDecoder(r.Body).Decode(&req)
+
 	phone := strings.TrimPrefix(req.PhoneNumber, "+")
+
 	device, err := manager.connectDevice(phone, req.UserID, req.CustomID)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "deviceId": device.ID, "pairingCode": device.PairingCode})
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":     true,
+		"deviceId":    device.ID,
+		"pairingCode": device.PairingCode,
+	})
 }
 
 func handleRemoveDevice(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["deviceId"]
+
 	manager.mutex.Lock()
+
 	if dev, ok := manager.devices[id]; ok {
 		if dev.Client != nil {
 			dev.Client.Disconnect()
 			dev.Client.Logout(manager.ctx)
 		}
+
 		jid, _ := types.ParseJID(id + "@s.whatsapp.net")
-		manager.container.DeleteDevice(manager.ctx, &store.Device{ID: &jid}) 
+		manager.container.DeleteDevice(manager.ctx, &store.Device{ID: &jid})
+
 		delete(manager.devices, id)
 	}
+
 	manager.mutex.Unlock()
-	manager.db.Exec("DELETE FROM earning_users WHERE phone_number = ?", id)
+
+	manager.db.Exec("DELETE FROM earning_users WHERE phone_number=?", id)
+
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
+
+/* ---------------------------------------------------
+   MAIN
+--------------------------------------------------- */
 
 var manager *WhatsAppManager
 
 func getEnv(key, fallback string) string {
-	if v, exists := os.LookupEnv(key); exists { return v }
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
 	return fallback
 }
 
 func main() {
 	manager = NewWhatsAppManager()
+
 	r := mux.NewRouter()
-	
+
 	// CORS
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-			if r.Method == "OPTIONS" { w.WriteHeader(200); return }
+
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(200)
+				return
+			}
 			next.ServeHTTP(w, r)
 		})
 	})
 
+	// ---------------------------
+	// ADMIN AUTH ROUTES
+	// ---------------------------
 	api := r.PathPrefix("/api").Subrouter()
+	api.HandleFunc("/admin-login", adminLogin).Methods("POST")
+	api.HandleFunc("/admin-login-check", adminLoginCheck).Methods("GET")
+
+	// ---------------------------
+	// WHATSAPP API ROUTES
+	// ---------------------------
 	api.HandleFunc("/whatsapp/status", handleStatus).Methods("GET")
 	api.HandleFunc("/whatsapp/send", handleSendSingle).Methods("POST")
 	api.HandleFunc("/whatsapp/bulk", handleSendBulk).Methods("POST")
 	api.HandleFunc("/messages", handleGetMessages).Methods("GET")
-	
+
 	earning := api.PathPrefix("/earning").Subrouter()
 	earning.HandleFunc("/add-device", handleAddDevice).Methods("POST")
 	earning.HandleFunc("/remove-device/{deviceId}", handleRemoveDevice).Methods("DELETE")
 
-	// Admin Panel
-	r.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "admin.html")
-	})
+	// ---------------------------
+	// ADMIN PAGE PROTECTION
+	// ---------------------------
+	r.PathPrefix("/admin/").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := r.Cookie("adminSession")
+		if err != nil || c.Value != "authenticated" {
+			http.Redirect(w, r, "/login.html", http.StatusFound)
+			return
+		}
+		http.FileServer(http.Dir("./public/")).ServeHTTP(w, r)
+	}))
 
-	// Serve Static Files (Public folder)
+	// ---------------------------
+	// STATIC FILE SERVER
+	// ---------------------------
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./public/")))
 
+	// ---------------------------
+	// START SERVER
+	// ---------------------------
 	port := getEnv("PORT", "8080")
-	fmt.Printf("🚀 Server running. \n📱 User Panel: http://localhost:%s\n👮 Admin Panel: http://localhost:%s/admin\n", port, port)
-	
+
+	fmt.Printf("\n🚀 Server Running")
+	fmt.Printf("\n📱 User Panel : http://localhost:%s", port)
+	fmt.Printf("\n👑 Admin Panel: http://localhost:%s/admin/admin.html\n\n", port)
+
 	srv := &http.Server{Addr: ":" + port, Handler: r}
 	go srv.ListenAndServe()
-	
+
+	// Shutdown
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
+
 	manager.db.Close()
 	fmt.Println("Shutting down...")
 }
+
+/* ----------------------------------------------
+   END OF FILE — MAIN.GO COMPLETE
+---------------------------------------------- */
