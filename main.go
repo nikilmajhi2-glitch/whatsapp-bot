@@ -1,1196 +1,945 @@
+
 package main
 
 import (
-	"context"
-	"database/sql"
-	"encoding/json"
-	"fmt"
-	"log"
-	"math/rand"
-	"net/http"
-	"os"
-	"os/signal"
-	"strings"
-	"sync"
-	"syscall"
-	"time"
+        "context"
+        "encoding/json"
+        "fmt"
+        "log"
+        "net/http"
+        "os"
+        "os/signal"
+        "strings"
+        "sync"
+        "syscall"
+        "time"
 
-	"github.com/gorilla/mux"
-	_ "github.com/mattn/go-sqlite3"
-	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/proto/waE2E"
-	"go.mau.fi/whatsmeow/store"
-	"go.mau.fi/whatsmeow/store/sqlstore"
-	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
-	waLog "go.mau.fi/whatsmeow/util/log"
-	"google.golang.org/protobuf/proto"
+        _ "github.com/mattn/go-sqlite3"
+        "github.com/gorilla/mux"
+        "go.mau.fi/whatsmeow"
+        "go.mau.fi/whatsmeow/proto/waE2E"
+        "go.mau.fi/whatsmeow/store/sqlstore"
+        "go.mau.fi/whatsmeow/types"
+        "go.mau.fi/whatsmeow/types/events"
+        waLog "go.mau.fi/whatsmeow/util/log"
+        "google.golang.org/protobuf/proto"
 )
 
-/* ---------------------------------------------------
-   ADMIN LOGIN CONFIG (LOCAL BACKEND LOGIN)
---------------------------------------------------- */
-
-var masterAdminEmail = "admin@rupeedesk.com"
-var masterAdminPassword = "admin@6371" // Change anytime
-
-// Admin Login API
-func adminLogin(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	var data struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
-		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
-		return
-	}
-
-	if data.Email == masterAdminEmail && data.Password == masterAdminPassword {
-		http.SetCookie(w, &http.Cookie{
-			Name:     "adminSession",
-			Value:    "authenticated",
-			MaxAge:   86400, // 1 day
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   false, // set to true in production with HTTPS
-		})
-		w.Write([]byte(`{"status":"ok","role":"admin"}`))
-		return
-	}
-
-	http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-}
-
-// Protect admin.html
-func adminLoginCheck(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	c, err := r.Cookie("adminSession")
-	if err != nil || c.Value != "authenticated" {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-	w.Write([]byte(`{"status":"ok"}`))
-}
-
-/* ---------------------------------------------------
-   STRONG ANTI-BAN SETTINGS
-   Tune these constants to your risk appetite.
---------------------------------------------------- */
-
-// Global daily cap across all devices (sum)
-var DailyLimit = 200
-
-// Random per-message delay (seconds)
-var MinDelay = 3
-var MaxDelay = 7
-
-// Extra delay when message contains link
-var LinkMinDelay = 10
-var LinkMaxDelay = 18
-
-// Long break after N messages (simulates human pauses)
-var BreakEvery = 12
-var BreakMin = 35
-var BreakMax = 75
-
-// Silent hours (local server time) during which sending is blocked
-var SilentStart = 1 // 1 AM
-var SilentEnd = 6   // 6 AM
-
-// RNG helper: sleep for randomized seconds between min and max (inclusive)
-func randomDelay(min, max int) {
-	if max <= min {
-		time.Sleep(time.Duration(min) * time.Second)
-		return
-	}
-	d := time.Duration(min+rand.Intn(max-min+1)) * time.Second
-	time.Sleep(d)
-}
-
-// Human-like message variation to avoid identical payload detection.
-// Keep this small and natural — you can expand variations as needed.
-func humanize(msg string) string {
-	variants := []string{
-		msg,
-		msg + " 😊",
-		"Hi! " + msg,
-		msg + " 🙏",
-		strings.Replace(msg, "Hello", "Hi", 1),
-		strings.Replace(msg, "Hello", "Hey", 1),
-	}
-	return variants[rand.Intn(len(variants))]
-}
-
-/* ---------------------------------------------------
-   ANTI-BAN CONFIG STORAGE (ONLY FOR ADMIN UI)
---------------------------------------------------- */
-
-type AntiBanSettings struct {
-	DailyLimit  int `json:"dailyLimit"`
-	MinDelay    int `json:"minDelay"`
-	MaxDelay    int `json:"maxDelay"`
-	LinkMin     int `json:"linkMin"`
-	LinkMax     int `json:"linkMax"`
-	BreakEvery  int `json:"breakEvery"`
-	BreakMin    int `json:"breakMin"`
-	BreakMax    int `json:"breakMax"`
-	SilentStart int `json:"silentStart"`
-	SilentEnd   int `json:"silentEnd"`
-}
-
-var AntiBanConfig AntiBanSettings
-
-// Load settings from file (if not exists create default file)
-func loadAntiBanConfig() {
-	data, err := os.ReadFile("antiban.json")
-	if err != nil {
-		AntiBanConfig = AntiBanSettings{
-			DailyLimit:  DailyLimit,
-			MinDelay:    MinDelay,
-			MaxDelay:    MaxDelay,
-			LinkMin:     LinkMinDelay,
-			LinkMax:     LinkMaxDelay,
-			BreakEvery:  BreakEvery,
-			BreakMin:    BreakMin,
-			BreakMax:    BreakMax,
-			SilentStart: SilentStart,
-			SilentEnd:   SilentEnd,
-		}
-		saveAntiBanConfig()
-		return
-	}
-	_ = json.Unmarshal(data, &AntiBanConfig)
-
-	// sync with globals
-	if AntiBanConfig.DailyLimit != 0 {
-		DailyLimit = AntiBanConfig.DailyLimit
-	}
-	if AntiBanConfig.MinDelay != 0 {
-		MinDelay = AntiBanConfig.MinDelay
-	}
-	if AntiBanConfig.MaxDelay != 0 {
-		MaxDelay = AntiBanConfig.MaxDelay
-	}
-	if AntiBanConfig.LinkMin != 0 {
-		LinkMinDelay = AntiBanConfig.LinkMin
-	}
-	if AntiBanConfig.LinkMax != 0 {
-		LinkMaxDelay = AntiBanConfig.LinkMax
-	}
-	if AntiBanConfig.BreakEvery != 0 {
-		BreakEvery = AntiBanConfig.BreakEvery
-	}
-	if AntiBanConfig.BreakMin != 0 {
-		BreakMin = AntiBanConfig.BreakMin
-	}
-	if AntiBanConfig.BreakMax != 0 {
-		BreakMax = AntiBanConfig.BreakMax
-	}
-	if AntiBanConfig.SilentStart != 0 {
-		SilentStart = AntiBanConfig.SilentStart
-	}
-	if AntiBanConfig.SilentEnd != 0 {
-		SilentEnd = AntiBanConfig.SilentEnd
-	}
-}
-
-// Save settings to file
-func saveAntiBanConfig() {
-	file, _ := json.MarshalIndent(AntiBanConfig, "", "  ")
-	_ = os.WriteFile("antiban.json", file, 0644)
-}
-
-/* ---------------------------------------------------
-   STRUCTS
---------------------------------------------------- */
-
-// Device has per-device anti-ban fields added
+// Device represents a WhatsApp device
 type Device struct {
-	ID           string            `json:"id"`
-	PhoneNumber  string            `json:"phoneNumber"`
-	Connected    bool              `json:"connected"`
-	IsPairing    bool              `json:"isPairing"`
-	PairingCode  string            `json:"pairingCode"`
-	MessagesSent int               `json:"messagesSent"`
-	LastUsed     time.Time         `json:"lastUsed"`
-	Client       *whatsmeow.Client `json:"-"`
-	UserID       string            `json:"userId"`
-	CustomID     string            `json:"customId"`
-
-	// NEW ANTI-BAN FIELDS (per-device)
-	DailySent    int       `json:"dailySent"`
-	LastResetDay int       `json:"lastResetDay"`
-	Trust        int       `json:"trust"`
-	CreatedAt    time.Time `json:"createdAt"`
+        ID           string              `json:"id"`
+        PhoneNumber  string              `json:"phoneNumber"`
+        Connected    bool                `json:"connected"`
+        IsPairing    bool                `json:"isPairing"`
+        PairingCode  string              `json:"pairingCode"`
+        MessagesSent int                 `json:"messagesSent"`
+        LastUsed     time.Time           `json:"lastUsed"`
+        Client       *whatsmeow.Client   `json:"-"`
+        UserID       string              `json:"userId"`       // Added for earning app
+        CustomID     string              `json:"customId"`     // Added for earning app
 }
 
+// Campaign represents a bulk messaging campaign
+type Campaign struct {
+        ID        string    `json:"id"`
+        Name      string    `json:"name"`
+        Status    string    `json:"status"` // active, paused, completed, cancelled
+        DeviceID  string    `json:"deviceId"`
+        Message   string    `json:"message"`
+        Total     int       `json:"total"`
+        Sent      int       `json:"sent"`
+        Failed    int       `json:"failed"`
+        CreatedAt time.Time `json:"createdAt"`
+        UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// Message represents a single message
 type Message struct {
-	ID          string     `json:"id"`
-	DeviceID    string     `json:"deviceId"`
-	PhoneNumber string     `json:"phoneNumber"`
-	MessageText string     `json:"messageText"`
-	Status      string     `json:"status"`
-	Timestamp   time.Time  `json:"timestamp"`
-	SentAt      *time.Time `json:"sentAt,omitempty"`
+        ID          string     `json:"id"`
+        CampaignID  string     `json:"campaignId"`
+        DeviceID    string     `json:"deviceId"`
+        PhoneNumber string     `json:"phoneNumber"`
+        MessageText string     `json:"messageText"`
+        Status      string     `json:"status"` // pending, sent, failed, cancelled
+        Timestamp   time.Time  `json:"timestamp"`
+        SentAt      *time.Time `json:"sentAt,omitempty"`
 }
 
-type BulkRequest struct {
-	DeviceID     string   `json:"deviceId"`
-	PhoneNumbers []string `json:"phoneNumbers"`
-	Message      string   `json:"message"`
-}
-
+// Earning App Request Types
 type AddDeviceRequest struct {
-	UserID      string `json:"userId"`
-	PhoneNumber string `json:"phoneNumber"`
-	CustomID    string `json:"customId"`
+        UserID      string `json:"userId"`
+        PhoneNumber string `json:"phoneNumber"`
+        CustomID    string `json:"customId"`
+        DeviceGuid  string `json:"deviceGuid"`
 }
 
+type MessageWebhook struct {
+        DeviceID    string `json:"deviceId"`
+        UserID      string `json:"userId"`
+        FromNumber  string `json:"fromNumber"`
+        MessageText string `json:"messageText"`
+        Timestamp   int64  `json:"timestamp"`
+}
+
+// WhatsAppManager manages multiple WhatsApp devices
 type WhatsAppManager struct {
-	devices      map[string]*Device
-	mutex        sync.RWMutex
-	container    *sqlstore.Container
-	db           *sql.DB
-	ctx          context.Context
-	msgQueue     chan Message
-	apiKey       string
-	DailySent    int
-	LastResetDay int
-	TrustScore   int
+        devices    map[string]*Device
+        campaigns  map[string]*Campaign
+        messages   []Message
+        mutex      sync.RWMutex
+        container  *sqlstore.Container
+        ctx        context.Context
+        msgQueue   chan Message
+        stopQueue  chan bool
+        apiKey     string
 }
 
-/* ---------------------------------------------------
-   INITIALIZATION
---------------------------------------------------- */
+// Request/Response types
+type LoginRequest struct {
+        PhoneNumber string `json:"phoneNumber"`
+}
+
+type LogoutRequest struct {
+        DeviceID string `json:"deviceId"`
+}
+
+type SendMessageRequest struct {
+        DeviceID    string `json:"deviceId"`
+        PhoneNumber string `json:"phoneNumber"`
+        Message     string `json:"message"`
+}
+
+type BulkMessageRequest struct {
+        DeviceID     string   `json:"deviceId"`
+        CampaignName string   `json:"campaignName"`
+        Message      string   `json:"message"`
+        PhoneNumbers []string `json:"phoneNumbers"`
+}
+
+type CampaignActionRequest struct {
+        CampaignID string `json:"campaignId"`
+}
 
 func NewWhatsAppManager() *WhatsAppManager {
-	ctx := context.Background()
-	dbLog := waLog.Stdout("Database", "ERROR", true)
+        ctx := context.Background()
 
-	container, err := sqlstore.New(ctx, "sqlite3", "file:whatsapp.db?_foreign_keys=on", dbLog)
-	if err != nil {
-		log.Fatal("Failed store:", err)
-	}
+        // Setup database
+        dbLog := waLog.Stdout("Database", "ERROR", true) // Only show errors
+        container, err := sqlstore.New(ctx, "sqlite3", "file:whatsapp.db?_foreign_keys=on", dbLog)
+        if err != nil {
+                log.Fatal("Failed to create database:", err)
+        }
 
-	db, err := sql.Open("sqlite3", "file:whatsapp.db?_foreign_keys=on")
-	if err != nil {
-		log.Fatal("Failed db:", err)
-	}
+        wm := &WhatsAppManager{
+                devices:   make(map[string]*Device),
+                campaigns: make(map[string]*Campaign),
+                messages:  make([]Message, 0),
+                container: container,
+                ctx:       ctx,
+                msgQueue:  make(chan Message, 1000),
+                stopQueue: make(chan bool),
+                apiKey:    getEnv("API_KEY", "your-secret-api-key-2024"),
+        }
 
-	wm := &WhatsAppManager{
-		devices:      make(map[string]*Device),
-		container:    container,
-		db:           db,
-		ctx:          ctx,
-		msgQueue:     make(chan Message, 3000),
-		apiKey:       getEnv("API_KEY", "your-secret-api-key-2024"),
-		DailySent:    0,
-		LastResetDay: time.Now().Day(),
-		TrustScore:   50,
-	}
+        // Start message queue processor
+        go wm.processMessageQueue()
 
-	loadAntiBanConfig() // load persisted admin settings (no change to logic)
-	wm.initDB()
-	wm.reconnectDevices()
-	go wm.processMessageQueue()
-	return wm
+        return wm
 }
-
-func (wm *WhatsAppManager) initDB() {
-	query := `
-	CREATE TABLE IF NOT EXISTS messages (
-		id TEXT PRIMARY KEY, 
-		device_id TEXT, 
-		phone_number TEXT, 
-		message_text TEXT, 
-		status TEXT, 
-		timestamp DATETIME, 
-		sent_at DATETIME
-	);
-	CREATE TABLE IF NOT EXISTS earning_users (
-		phone_number TEXT PRIMARY KEY, 
-		user_id TEXT, 
-		custom_id TEXT
-	);
-	`
-	_, err := wm.db.Exec(query)
-	if err != nil {
-		log.Fatal("DB Init failed:", err)
-	}
-}
-
-/* ---------------------------------------------------
-   DEVICE WARM-UP & TRUST HELPERS
---------------------------------------------------- */
-
-// warmUpLimit returns a safe per-device daily cap based on device age in days.
-func warmUpLimit(device *Device) int {
-	if device == nil {
-		return 0
-	}
-	days := int(time.Since(device.CreatedAt).Hours() / 24)
-
-	switch {
-	case days <= 2:
-		return 20
-	case days <= 4:
-		return 40
-	case days <= 7:
-		return 75
-	case days <= 14:
-		return 120
-	default:
-		return 200
-	}
-}
-
-// deviceCanSend checks per-device warm-up and trust thresholds.
-func (wm *WhatsAppManager) deviceCanSend(device *Device) bool {
-	if device == nil {
-		return false
-	}
-	
-	wm.mutex.Lock()
-	defer wm.mutex.Unlock()
-	
-	now := time.Now()
-	if device.LastResetDay != now.Day() {
-		device.DailySent = 0
-		device.LastResetDay = now.Day()
-		if device.Trust < 90 {
-			device.Trust += 5
-		}
-	}
-
-	// Warm-up limit
-	if device.DailySent >= warmUpLimit(device) {
-		return false
-	}
-
-	// If trust extremely low, block
-	if device.Trust < 25 {
-		return false
-	}
-
-	return true
-}
-
-/* ---------------------------------------------------
-   RECONNECT / CONNECT / HANDLERS
---------------------------------------------------- */
-
-func (wm *WhatsAppManager) reconnectDevices() {
-	devices, err := wm.container.GetAllDevices(wm.ctx)
-	if err != nil {
-		log.Printf("Error getting devices: %v", err)
-		return
-	}
-
-	for _, d := range devices {
-		if d.ID == nil {
-			continue
-		}
-		phoneNumber := d.ID.User
-
-		var userID, customID string
-		err := wm.db.QueryRow("SELECT user_id, custom_id FROM earning_users WHERE phone_number = ?", phoneNumber).Scan(&userID, &customID)
-		if err != nil && err != sql.ErrNoRows {
-			log.Printf("Error querying earning_users: %v", err)
-		}
-
-		clientLog := waLog.Stdout("Client-"+phoneNumber, "ERROR", true)
-		client := whatsmeow.NewClient(d, clientLog)
-
-		device := &Device{
-			ID:           phoneNumber,
-			PhoneNumber:  phoneNumber,
-			Connected:    false,
-			Client:       client,
-			UserID:       userID,
-			CustomID:     customID,
-			LastUsed:     time.Now(),
-			DailySent:    0,
-			LastResetDay: time.Now().Day(),
-			Trust:        50,
-			CreatedAt:    time.Now(),
-		}
-
-		wm.registerHandlers(client, device)
-		
-		go func(client *whatsmeow.Client, phone string) {
-			time.Sleep(2 * time.Second) // Small delay before connecting
-			err := client.Connect()
-			if err != nil {
-				log.Printf("Failed to connect device %s: %v", phone, err)
-			}
-		}(client, phoneNumber)
-
-		wm.mutex.Lock()
-		wm.devices[phoneNumber] = device
-		wm.mutex.Unlock()
-	}
-}
-
-func (wm *WhatsAppManager) connectDevice(phoneNumber string, userID, customID string) (*Device, error) {
-	wm.mutex.Lock()
-	defer wm.mutex.Unlock()
-
-	if dev, ok := wm.devices[phoneNumber]; ok && dev.Connected {
-		return dev, nil
-	}
-
-	deviceStore := wm.container.NewDevice()
-	clientLog := waLog.Stdout("Client-"+phoneNumber, "ERROR", true)
-	client := whatsmeow.NewClient(deviceStore, clientLog)
-
-	device := &Device{
-		ID:           phoneNumber,
-		PhoneNumber:  phoneNumber,
-		Connected:    false,
-		IsPairing:    true,
-		Client:       client,
-		LastUsed:     time.Now(),
-		UserID:       userID,
-		CustomID:     customID,
-		DailySent:    0,
-		LastResetDay: time.Now().Day(),
-		Trust:        40,
-		CreatedAt:    time.Now(),
-	}
-
-	wm.registerHandlers(client, device)
-
-	if err := client.Connect(); err != nil {
-		return nil, fmt.Errorf("connect failed: %v", err)
-	}
-
-	code, err := client.PairPhone(wm.ctx, phoneNumber, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
-	if err != nil {
-		return nil, fmt.Errorf("pairing failed: %v", err)
-	}
-
-	device.PairingCode = code
-	wm.devices[phoneNumber] = device
-
-	if userID != "" {
-		_, err := wm.db.Exec("INSERT OR REPLACE INTO earning_users (phone_number, user_id, custom_id) VALUES (?, ?, ?)", phoneNumber, userID, customID)
-		if err != nil {
-			log.Printf("Error saving earning user: %v", err)
-		}
-	}
-
-	go wm.monitorPairing(device)
-	return device, nil
-}
-
-func (wm *WhatsAppManager) registerHandlers(client *whatsmeow.Client, device *Device) {
-	client.AddEventHandler(func(evt interface{}) {
-		switch v := evt.(type) {
-
-		case *events.Connected:
-			wm.mutex.Lock()
-			device.Connected = true
-			device.IsPairing = false
-			wm.mutex.Unlock()
-			log.Printf("Device %s connected successfully", device.PhoneNumber)
-
-		case *events.Disconnected:
-			wm.mutex.Lock()
-			device.Connected = false
-			wm.mutex.Unlock()
-			log.Printf("Device %s disconnected", device.PhoneNumber)
-
-		case *events.Message:
-			if !v.Info.IsFromMe && device.UserID != "" {
-				wm.handleIncomingMessage(device, v)
-			}
-
-		case *events.PairSuccess:
-			wm.mutex.Lock()
-			device.Connected = true
-			device.IsPairing = false
-			device.PairingCode = ""
-			wm.mutex.Unlock()
-			log.Printf("Device %s paired successfully", device.PhoneNumber)
-		}
-	})
-}
-
-func (wm *WhatsAppManager) monitorPairing(device *Device) {
-	for i := 0; i < 120; i++ {
-		time.Sleep(time.Second)
-		if device.Client.Store.ID != nil {
-			wm.mutex.Lock()
-			device.Connected = true
-			device.IsPairing = false
-			device.PairingCode = ""
-			wm.mutex.Unlock()
-			return
-		}
-	}
-	
-	wm.mutex.Lock()
-	device.IsPairing = false
-	wm.mutex.Unlock()
-	log.Printf("Pairing timeout for device %s", device.PhoneNumber)
-}
-
-/* ---------------------------------------------------
-   MESSAGE HANDLING
---------------------------------------------------- */
-
-func (wm *WhatsAppManager) handleIncomingMessage(device *Device, msg *events.Message) {
-	var body string
-
-	if msg.Message.GetConversation() != "" {
-		body = msg.Message.GetConversation()
-	} else if msg.Message.GetExtendedTextMessage() != nil {
-		body = msg.Message.GetExtendedTextMessage().GetText()
-	}
-
-	_, err := wm.db.Exec(
-		"INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp) VALUES (?,?,?,?,?,?)",
-		fmt.Sprintf("in_%d", msg.Info.Timestamp.UnixNano()),
-		device.ID,
-		msg.Info.Sender.User,
-		body,
-		"received",
-		time.Now(),
-	)
-	if err != nil {
-		log.Printf("Error saving incoming message: %v", err)
-	}
-}
-
-// canSendNow returns whether it's okay to send right now (global daily cap, silent hours)
-func (wm *WhatsAppManager) canSendNow() bool {
-	now := time.Now()
-
-	wm.mutex.Lock()
-	// reset global daily counter at midnight (local server time)
-	if now.Day() != wm.LastResetDay {
-		wm.DailySent = 0
-		wm.LastResetDay = now.Day()
-		// slowly increase global trust score a bit each day
-		if wm.TrustScore < 80 {
-			wm.TrustScore += 5
-		}
-	}
-	daily := wm.DailySent
-	wm.mutex.Unlock()
-
-	// silent hours check (handles wrap-around)
-	if SilentStart <= SilentEnd {
-		if now.Hour() >= SilentStart && now.Hour() <= SilentEnd {
-			return false
-		}
-	} else {
-		if now.Hour() >= SilentStart || now.Hour() <= SilentEnd {
-			return false
-		}
-	}
-
-	// global daily cap
-	if daily >= DailyLimit {
-		return false
-	}
-
-	return true
-}
-
-/* ---------------------------------------------------
-   QUEUE + SENDER (unchanged logic)
---------------------------------------------------- */
 
 func (wm *WhatsAppManager) processMessageQueue() {
-	// seed rng for randomization (ensure this runs once)
-	rand.Seed(time.Now().UnixNano())
-
-	msgCounter := 0
-
-	for msg := range wm.msgQueue {
-
-		// Wait until both global & device safety allow sending
-		for {
-			// check global
-			if !wm.canSendNow() {
-				time.Sleep(15 * time.Second)
-				continue
-			}
-
-			// check device existence & per-device safety
-			wm.mutex.RLock()
-			dev := wm.devices[msg.DeviceID]
-			wm.mutex.RUnlock()
-
-			if dev != nil && wm.deviceCanSend(dev) {
-				break
-			}
-
-			// try to find any other device we can use
-			found := false
-			wm.mutex.RLock()
-			for _, d := range wm.devices {
-				if d.Connected && wm.deviceCanSend(d) {
-					found = true
-					break
-				}
-			}
-			wm.mutex.RUnlock()
-			if found {
-				break
-			}
-
-			time.Sleep(15 * time.Second)
-		}
-
-		// Pre-send checks: if message is malformed skip
-		if msg.PhoneNumber == "" || strings.TrimSpace(msg.MessageText) == "" {
-			wm.updateMsgStatus(msg.ID, "failed")
-			continue
-		}
-
-		// Send the message (sendActualMessage returns success)
-		success := wm.sendActualMessage(msg)
-
-		// Update counters & trust score
-		wm.mutex.Lock()
-		if success {
-			wm.DailySent++
-			msgCounter++
-			// small global trust bump occasionally
-			if wm.TrustScore < 100 && rand.Intn(100) < 20 {
-				wm.TrustScore++
-			}
-		} else {
-			// penalize global trust on failures
-			if wm.TrustScore > 10 {
-				wm.TrustScore -= 8
-			}
-		}
-		wm.mutex.Unlock()
-
-		// 1) Base human delay between messages
-		randomDelay(MinDelay, MaxDelay)
-
-		// 2) If message contains link, add extra delay
-		if strings.Contains(msg.MessageText, "http://") || strings.Contains(msg.MessageText, "https://") {
-			randomDelay(LinkMinDelay, LinkMaxDelay)
-		}
-
-		// 3) Long break after N messages to simulate human pause
-		if msgCounter%BreakEvery == 0 {
-			randomDelay(BreakMin, BreakMax)
-		}
-
-		// 4) Occasional human idle (10-20% chance)
-		if rand.Intn(100) < 15 {
-			randomDelay(20, 60)
-		}
-
-		// 5) If global trust low, enforce a cooldown
-		wm.mutex.RLock()
-		ts := wm.TrustScore
-		wm.mutex.RUnlock()
-		if ts < 40 {
-			randomDelay(30, 90)
-		}
-	}
+        for {
+                select {
+                case message := <-wm.msgQueue:
+                        wm.sendMessage(message)
+                        // Delay between messages to avoid spam detection
+                        time.Sleep(3 * time.Second)
+                case <-wm.stopQueue:
+                        return
+                }
+        }
 }
 
-func (wm *WhatsAppManager) sendActualMessage(message Message) bool {
-	// find device requested
-	wm.mutex.RLock()
-	device, exists := wm.devices[message.DeviceID]
-	wm.mutex.RUnlock()
+func (wm *WhatsAppManager) connectDevice(phoneNumber string) (*Device, error) {
+        wm.mutex.Lock()
+        defer wm.mutex.Unlock()
 
-	// fallback to any connected device if the requested one is offline or not allowed
-	if !exists || !device.Connected || !wm.deviceCanSend(device) {
-		// attempt to rotate to another good device
-		wm.mutex.RLock()
-		for _, d := range wm.devices {
-			if d.Connected && wm.deviceCanSend(d) {
-				device = d
-				break
-			}
-		}
-		wm.mutex.RUnlock()
-	}
+        // Create new device store
+        deviceStore := wm.container.NewDevice()
 
-	if device == nil || !device.Connected {
-		wm.updateMsgStatus(message.ID, "failed")
-		return false
-	}
+        // Create client with minimal logging
+        clientLog := waLog.Stdout("Client-"+phoneNumber, "ERROR", true) // Only show errors
+        client := whatsmeow.NewClient(deviceStore, clientLog)
 
-	// check again deviceCanSend before actual send (race safe)
-	if !wm.deviceCanSend(device) {
-		wm.updateMsgStatus(message.ID, "failed")
-		return false
-	}
+        device := &Device{
+                ID:          phoneNumber,
+                PhoneNumber: phoneNumber,
+                Connected:   false,
+                IsPairing:   true,
+                Client:      client,
+                LastUsed:    time.Now(),
+        }
 
-	// Construct JID and a humanized message body
-	jid, err := types.ParseJID(strings.TrimSpace(message.PhoneNumber) + "@s.whatsapp.net")
-	if err != nil {
-		wm.updateMsgStatus(message.ID, "failed")
-		return false
-	}
+        // Add event handler
+        client.AddEventHandler(func(evt interface{}) {
+                switch v := evt.(type) {
+                case *events.Connected:
+                        log.Printf("✅ Device %s connected", phoneNumber)
+                        wm.mutex.Lock()
+                        device.Connected = true
+                        device.IsPairing = false
+                        wm.mutex.Unlock()
+                case *events.Disconnected:
+                        log.Printf("❌ Device %s disconnected", phoneNumber)
+                        wm.mutex.Lock()
+                        device.Connected = false
+                        wm.mutex.Unlock()
+                case *events.Message:
+                        // Handle incoming messages for earning app
+                        if !v.Info.IsFromMe && device.UserID != "" {
+                                wm.handleIncomingMessage(device, v)
+                        }
+                }
+        })
 
-	finalText := humanize(message.MessageText)
+        // Connect to WhatsApp
+        err := client.Connect()
+        if err != nil {
+                return nil, fmt.Errorf("failed to connect: %v", err)
+        }
 
-	waMsg := &waE2E.Message{Conversation: proto.String(finalText)}
+        // Generate pairing code
+        code, err := client.PairPhone(wm.ctx, phoneNumber, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+        if err != nil {
+                return nil, fmt.Errorf("failed to generate pairing code: %v", err)
+        }
 
-	// attempt send with a simple retry strategy (2 attempts)
-	ctx, cancel := context.WithTimeout(wm.ctx, 30*time.Second)
-	defer cancel()
+        device.PairingCode = code
+        wm.devices[phoneNumber] = device
 
-	_, err = device.Client.SendMessage(ctx, jid, waMsg)
-	if err != nil {
-		// first failure -> small random backoff then retry once
-		randomDelay(5, 12)
-		_, err2 := device.Client.SendMessage(wm.ctx, jid, waMsg)
-		if err2 != nil {
-			// permanent failure
-			wm.updateMsgStatus(message.ID, "failed")
-			// penalize device trust
-			wm.mutex.Lock()
-			if device.Trust > 5 {
-				device.Trust -= 5
-			}
-			wm.mutex.Unlock()
-			// log for diagnostics
-			log.Printf("Send failed to %s: %v / retry: %v\n", message.PhoneNumber, err, err2)
-			return false
-		}
-	}
+        // Wait for pairing in background
+        go func() {
+                for i := 0; i < 120; i++ { // Wait up to 2 minutes
+                        time.Sleep(1 * time.Second)
+                        if client.Store.ID != nil {
+                                wm.mutex.Lock()
+                                device.Connected = true
+                                device.IsPairing = false
+                                device.PairingCode = ""
+                                wm.mutex.Unlock()
+                                log.Printf("✅ Device %s paired successfully", phoneNumber)
+                                break
+                        }
+                }
+        }()
 
-	// success: update device & DB
-	wm.mutex.Lock()
-	device.MessagesSent++
-	device.LastUsed = time.Now()
-	device.DailySent++
-	if device.Trust < 100 {
-		device.Trust += 2
-	}
-	wm.mutex.Unlock()
-
-	wm.updateMsgStatus(message.ID, "sent")
-	return true
+        return device, nil
 }
 
-func (wm *WhatsAppManager) updateMsgStatus(id, status string) {
-	_, err := wm.db.Exec("UPDATE messages SET status=?, sent_at=? WHERE id=?", status, time.Now(), id)
-	if err != nil {
-		log.Printf("Error updating message status: %v", err)
-	}
+// NEW: Connect device for earning app with user info
+func (wm *WhatsAppManager) connectEarningDevice(phoneNumber, userID, customID string) (*Device, error) {
+        device, err := wm.connectDevice(phoneNumber)
+        if err != nil {
+                return nil, err
+        }
+
+        // Add user info for earning tracking
+        wm.mutex.Lock()
+        device.UserID = userID
+        device.CustomID = customID
+        wm.mutex.Unlock()
+
+        return device, nil
 }
 
-/* ---------------------------------------------------
-   API HANDLERS
---------------------------------------------------- */
+// NEW: Handle incoming messages for earning app
+func (wm *WhatsAppManager) handleIncomingMessage(device *Device, msg *events.Message) {
+        if device.UserID == "" {
+                return // Not an earning app device
+        }
 
-func handleGetMessages(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	rows, err := manager.db.Query(`
-		SELECT id, device_id, phone_number, message_text, status, timestamp 
-		FROM messages ORDER BY timestamp DESC LIMIT 200
-	`)
-	if err != nil {
-		http.Error(w, `{"error":"Database error"}`, http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
+        // Extract message text
+        var messageText string
+        if msg.Message.GetConversation() != "" {
+                messageText = msg.Message.GetConversation()
+        } else if msg.Message.GetExtendedTextMessage() != nil {
+                messageText = msg.Message.GetExtendedTextMessage().GetText()
+        }
 
-	var messages []Message
+        // Create webhook payload
+        webhook := MessageWebhook{
+                DeviceID:    device.ID,
+                UserID:      device.UserID,
+                FromNumber:  msg.Info.Sender.User,
+                MessageText: messageText,
+                Timestamp:   msg.Info.Timestamp.Unix(),
+        }
 
-	for rows.Next() {
-		var m Message
-		err := rows.Scan(&m.ID, &m.DeviceID, &m.PhoneNumber, &m.MessageText, &m.Status, &m.Timestamp)
-		if err != nil {
-			log.Printf("Error scanning message: %v", err)
-			continue
-		}
-		messages = append(messages, m)
-	}
+        // Send webhook to Firebase/earning system
+        go wm.sendMessageWebhook(webhook)
 
-	if err := rows.Err(); err != nil {
-		http.Error(w, `{"error":"Database error"}`, http.StatusInternalServerError)
-		return
-	}
-
-	json.NewEncoder(w).Encode(messages)
+        log.Printf("💰 Message received for user %s (%s): +₹0.63", device.CustomID, device.UserID)
 }
 
-func handleSendSingle(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	var req Message
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
-		return
-	}
-
-	req.ID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
-	req.Status = "pending"
-	req.Timestamp = time.Now()
-
-	_, err := manager.db.Exec(`
-		INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp) 
-		VALUES (?,?,?,?,?,?)
-	`, req.ID, req.DeviceID, req.PhoneNumber, req.MessageText, req.Status, req.Timestamp)
-
-	if err != nil {
-		http.Error(w, `{"error":"Failed to save message"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// push to the queue (will be sent by anti-ban queue)
-	manager.msgQueue <- req
-
-	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+// NEW: Send webhook to earning system
+func (wm *WhatsAppManager) sendMessageWebhook(webhook MessageWebhook) {
+        // In a real implementation, this would send to your Firebase Functions
+        // For now, just log the earning event
+        log.Printf("📤 Webhook: User %s earned ₹0.63 from message", webhook.UserID)
+        
+        // TODO: Send HTTP request to your Firebase function to update user balance
+        // This would be something like:
+        // POST https://your-firebase-function.com/updateUserEarnings
+        // Body: webhook data
 }
 
-func handleSendBulk(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	var req BulkRequest
+func (wm *WhatsAppManager) disconnectDevice(deviceID string) error {
+        wm.mutex.Lock()
+        defer wm.mutex.Unlock()
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
-		return
-	}
+        device, exists := wm.devices[deviceID]
+        if !exists {
+                return fmt.Errorf("device not found")
+        }
 
-	// queue insertion is done in a goroutine so API returns quickly
-	go func() {
-		for _, phone := range req.PhoneNumbers {
-			phone = strings.TrimSpace(phone)
-			if phone == "" {
-				continue
-			}
+        if device.Client != nil {
+                device.Client.Disconnect()
+        }
 
-			// Create message with unique ID
-			msg := Message{
-				ID:          fmt.Sprintf("bulk_%d_%s", time.Now().UnixNano(), phone),
-				DeviceID:    req.DeviceID,
-				PhoneNumber: phone,
-				MessageText: req.Message,
-				Status:      "pending",
-				Timestamp:   time.Now(),
-			}
-
-			// insert to DB immediately
-			_, err := manager.db.Exec(`
-				INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp)
-				VALUES (?,?,?,?,?,?)
-			`, msg.ID, msg.DeviceID, msg.PhoneNumber, msg.MessageText, msg.Status, msg.Timestamp)
-
-			if err != nil {
-				log.Printf("Error saving bulk message: %v", err)
-				continue
-			}
-
-			// push into queue — anti-ban queue will pace sends
-			manager.msgQueue <- msg
-		}
-	}()
-
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": fmt.Sprintf("Queued %d messages", len(req.PhoneNumbers)),
-	})
+        delete(wm.devices, deviceID)
+        return nil
 }
 
-func handleStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	manager.mutex.RLock()
-	defer manager.mutex.RUnlock()
+func (wm *WhatsAppManager) getAvailableDevice(preferredDeviceID string) *Device {
+        wm.mutex.RLock()
+        defer wm.mutex.RUnlock()
 
-	list := make([]*Device, 0)
+        // If specific device requested
+        if preferredDeviceID != "" {
+                if device, exists := wm.devices[preferredDeviceID]; exists && device.Connected {
+                        return device
+                }
+        }
 
-	for _, d := range manager.devices {
-		list = append(list, d)
-	}
+        // Find device with least messages sent (load balancing)
+        var bestDevice *Device
+        for _, device := range wm.devices {
+                if device.Connected {
+                        if bestDevice == nil || device.MessagesSent < bestDevice.MessagesSent {
+                                bestDevice = device
+                        }
+                }
+        }
 
-	json.NewEncoder(w).Encode(map[string]interface{}{"devices": list})
+        return bestDevice
 }
 
-func handleAddDevice(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	var req AddDeviceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
-		return
-	}
+func (wm *WhatsAppManager) sendMessage(message Message) error {
+        device := wm.getAvailableDevice(message.DeviceID)
+        if device == nil {
+                wm.updateMessageStatus(message.ID, "failed")
+                return fmt.Errorf("no available device")
+        }
 
-	phone := strings.TrimPrefix(req.PhoneNumber, "+")
+        // Parse phone number
+        jid, err := types.ParseJID(message.PhoneNumber + "@s.whatsapp.net")
+        if err != nil {
+                wm.updateMessageStatus(message.ID, "failed")
+                return fmt.Errorf("invalid phone number: %v", err)
+        }
 
-	device, err := manager.connectDevice(phone, req.UserID, req.CustomID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
-		return
-	}
+        // Create message
+        msg := &waE2E.Message{
+                Conversation: proto.String(message.MessageText),
+        }
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":     true,
-		"deviceId":    device.ID,
-		"pairingCode": device.PairingCode,
-	})
+        // Send message
+        _, err = device.Client.SendMessage(wm.ctx, jid, msg)
+        if err != nil {
+                wm.updateMessageStatus(message.ID, "failed")
+                log.Printf("❌ Failed to send to %s: %v", message.PhoneNumber, err)
+                return fmt.Errorf("failed to send message: %v", err)
+        }
+
+        // Update statistics
+        wm.mutex.Lock()
+        device.MessagesSent++
+        device.LastUsed = time.Now()
+        wm.mutex.Unlock()
+
+        wm.updateMessageStatus(message.ID, "sent")
+        log.Printf("✅ Message sent to %s via device %s", message.PhoneNumber, device.PhoneNumber)
+
+        return nil
 }
 
-func handleRemoveDevice(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	vars := mux.Vars(r)
-	id := vars["deviceId"]
+func (wm *WhatsAppManager) updateMessageStatus(messageID, status string) {
+        wm.mutex.Lock()
+        defer wm.mutex.Unlock()
 
-	manager.mutex.Lock()
-	defer manager.mutex.Unlock()
-
-	if dev, ok := manager.devices[id]; ok {
-		if dev.Client != nil {
-			dev.Client.Disconnect()
-			dev.Client.Logout(manager.ctx)
-		}
-
-		jid, _ := types.ParseJID(id + "@s.whatsapp.net")
-		manager.container.DeleteDevice(manager.ctx, &store.Device{ID: &jid})
-
-		delete(manager.devices, id)
-	}
-
-	_, err := manager.db.Exec("DELETE FROM earning_users WHERE phone_number=?", id)
-	if err != nil {
-		log.Printf("Error deleting earning user: %v", err)
-	}
-
-	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+        for i := range wm.messages {
+                if wm.messages[i].ID == messageID {
+                        wm.messages[i].Status = status
+                        if status == "sent" {
+                                now := time.Now()
+                                wm.messages[i].SentAt = &now
+                        }
+                        break
+                }
+        }
 }
 
-/* ---------------------------------------------------
-   ANTI-BAN API ROUTES (for admin panel)
---------------------------------------------------- */
+func (wm *WhatsAppManager) createCampaign(name, deviceID, message string, phoneNumbers []string) (*Campaign, error) {
+        campaignID := fmt.Sprintf("campaign_%d", time.Now().UnixNano())
 
-func handleAntiBanGet(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	manager.mutex.RLock()
-	defer manager.mutex.RUnlock()
+        campaign := &Campaign{
+                ID:        campaignID,
+                Name:      name,
+                Status:    "active",
+                DeviceID:  deviceID,
+                Message:   message,
+                Total:     len(phoneNumbers),
+                Sent:      0,
+                Failed:    0,
+                CreatedAt: time.Now(),
+                UpdatedAt: time.Now(),
+        }
 
-	devices := []map[string]interface{}{}
+        wm.mutex.Lock()
+        wm.campaigns[campaignID] = campaign
+        wm.mutex.Unlock()
 
-	for _, d := range manager.devices {
-		devices = append(devices, map[string]interface{}{
-			"id":    d.ID,
-			"phone": d.PhoneNumber,
-			"sent":  d.DailySent,
-			"limit": warmUpLimit(d),
-			"trust": d.Trust,
-		})
-	}
+        // Queue messages
+        for _, phone := range phoneNumbers {
+                messageID := fmt.Sprintf("msg_%d_%s", time.Now().UnixNano(), phone)
+                msg := Message{
+                        ID:          messageID,
+                        CampaignID:  campaignID,
+                        DeviceID:    deviceID,
+                        PhoneNumber: phone,
+                        MessageText: message,
+                        Status:      "pending",
+                        Timestamp:   time.Now(),
+                }
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"global":  AntiBanConfig,
-		"devices": devices,
-	})
+                wm.mutex.Lock()
+                wm.messages = append(wm.messages, msg)
+                wm.mutex.Unlock()
+
+                // Queue for sending
+                select {
+                case wm.msgQueue <- msg:
+                default:
+                        log.Printf("⚠️ Message queue full, skipping message to %s", phone)
+                }
+        }
+
+        return campaign, nil
 }
 
-func handleAntiBanSave(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	var cfg AntiBanSettings
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
-		return
-	}
+func (wm *WhatsAppManager) getStatus() map[string]interface{} {
+        wm.mutex.RLock()
+        defer wm.mutex.RUnlock()
 
-	AntiBanConfig = cfg
-	saveAntiBanConfig()
+        devices := make([]*Device, 0, len(wm.devices))
+        for _, device := range wm.devices {
+                devices = append(devices, &Device{
+                        ID:           device.ID,
+                        PhoneNumber:  device.PhoneNumber,
+                        Connected:    device.Connected,
+                        IsPairing:    device.IsPairing,
+                        PairingCode:  device.PairingCode,
+                        MessagesSent: device.MessagesSent,
+                        LastUsed:     device.LastUsed,
+                        UserID:       device.UserID,
+                        CustomID:     device.CustomID,
+                })
+        }
 
-	// Sync globals
-	if cfg.DailyLimit != 0 {
-		DailyLimit = cfg.DailyLimit
-	}
-	if cfg.MinDelay != 0 {
-		MinDelay = cfg.MinDelay
-	}
-	if cfg.MaxDelay != 0 {
-		MaxDelay = cfg.MaxDelay
-	}
-	if cfg.LinkMin != 0 {
-		LinkMinDelay = cfg.LinkMin
-	}
-	if cfg.LinkMax != 0 {
-		LinkMaxDelay = cfg.LinkMax
-	}
-	if cfg.BreakEvery != 0 {
-		BreakEvery = cfg.BreakEvery
-	}
-	if cfg.BreakMin != 0 {
-		BreakMin = cfg.BreakMin
-	}
-	if cfg.BreakMax != 0 {
-		BreakMax = cfg.BreakMax
-	}
-	if cfg.SilentStart != 0 {
-		SilentStart = cfg.SilentStart
-	}
-	if cfg.SilentEnd != 0 {
-		SilentEnd = cfg.SilentEnd
-	}
-
-	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+        return map[string]interface{}{
+                "devices":   devices,
+                "total":     len(devices),
+                "connected": len(devices),
+        }
 }
 
-func handleAntiBanResetDevice(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	
-	id := mux.Vars(r)["deviceId"]
-
-	manager.mutex.Lock()
-	defer manager.mutex.Unlock()
-
-	if d, ok := manager.devices[id]; ok {
-		d.DailySent = 0
-		d.Trust = 60
-		d.LastResetDay = time.Now().Day()
-	}
-
-	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+// Middleware for API key validation
+func (wm *WhatsAppManager) validateAPIKey(next http.HandlerFunc) http.HandlerFunc {
+        return func(w http.ResponseWriter, r *http.Request) {
+                apiKey := r.Header.Get("X-API-Key")
+                if apiKey != wm.apiKey {
+                        http.Error(w, "Unauthorized: Invalid API key", http.StatusUnauthorized)
+                        return
+                }
+                next(w, r)
+        }
 }
 
-/* ---------------------------------------------------
-   MAIN
---------------------------------------------------- */
+// Helper function to get environment variables
+func getEnv(key, fallback string) string {
+        if value, exists := os.LookupEnv(key); exists {
+                return value
+        }
+        return fallback
+}
 
 var manager *WhatsAppManager
 
-func getEnv(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return fallback
-}
-
 func main() {
-	// Ensure rand seeded
-	rand.Seed(time.Now().UnixNano())
-	
-	manager = NewWhatsAppManager()
+        fmt.Println("======================================================================")
+        fmt.Println("🚀 WHATSAPP MULTI-DEVICE SYSTEM + EARNING APP API")
+        fmt.Println("======================================================================")
+        fmt.Println("✅ System Status: INITIALIZING...")
 
-	r := mux.NewRouter()
+        manager = NewWhatsAppManager()
 
-	// CORS
-	r.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        fmt.Println("✅ Database: CONNECTED")
+        fmt.Println("✅ Multi-Device Support: ENABLED")
+        fmt.Println("✅ Earning App API: ENABLED")
+        fmt.Println("✅ Load Balancing: ACTIVE")
+        fmt.Println("✅ Campaign Management: READY")
+        fmt.Println("✅ Message Tracking: ENABLED")
+        fmt.Println("✅ Webhook System: ACTIVE")
+        fmt.Println("✅ Web Dashboard: STARTING...")
+        fmt.Println("======================================================================")
 
-			if r.Method == "OPTIONS" {
-				w.WriteHeader(200)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	})
+        port := getEnv("PORT", "8080")
+        fmt.Printf("🌐 Server running on port: %s\n", port)
+        if port == "8080" {
+                fmt.Println("🌐 Dashboard: http://localhost:8080")
+        }
+        fmt.Println("======================================================================")
 
-	// ---------------------------
-	// ADMIN AUTH ROUTES
-	// ---------------------------
-	api := r.PathPrefix("/api").Subrouter()
-	api.HandleFunc("/admin-login", adminLogin).Methods("POST")
-	api.HandleFunc("/admin-login-check", adminLoginCheck).Methods("GET")
+        // Setup HTTP server
+        router := mux.NewRouter()
 
-	// ---------------------------
-	// WHATSAPP API ROUTES
-	// ---------------------------
-	api.HandleFunc("/whatsapp/status", handleStatus).Methods("GET")
-	api.HandleFunc("/whatsapp/send", handleSendSingle).Methods("POST")
-	api.HandleFunc("/whatsapp/bulk", handleSendBulk).Methods("POST")
-	api.HandleFunc("/messages", handleGetMessages).Methods("GET")
+        // Enable CORS
+        router.Use(func(next http.Handler) http.Handler {
+                return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                        w.Header().Set("Access-Control-Allow-Origin", "*")
+                        w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+                        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+                        
+                        if r.Method == "OPTIONS" {
+                                w.WriteHeader(http.StatusOK)
+                                return
+                        }
+                        
+                        next.ServeHTTP(w, r)
+                })
+        })
 
-	earning := api.PathPrefix("/earning").Subrouter()
-	earning.HandleFunc("/add-device", handleAddDevice).Methods("POST")
-	earning.HandleFunc("/remove-device/{deviceId}", handleRemoveDevice).Methods("DELETE")
+        // Serve HTML dashboard
+        router.HandleFunc("/", serveHTML).Methods("GET")
+        router.HandleFunc("/health", handleHealth).Methods("GET")
 
-	// ---------------------------
-	// ANTI-BAN API ROUTES
-	// ---------------------------
-	api.HandleFunc("/antiban/get", handleAntiBanGet).Methods("GET")
-	api.HandleFunc("/antiban/save", handleAntiBanSave).Methods("POST")
-	api.HandleFunc("/antiban/reset-device/{deviceId}", handleAntiBanResetDevice).Methods("POST")
+        // Original WhatsApp Bot API Routes
+        api := router.PathPrefix("/api").Subrouter()
 
-	// ---------------------------
-	// ADMIN PAGE PROTECTION
-	// ---------------------------
-	r.PathPrefix("/admin/").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie("adminSession")
-		if err != nil || c.Value != "authenticated" {
-			http.Redirect(w, r, "/login.html", http.StatusFound)
-			return
-		}
-		http.FileServer(http.Dir("./public/")).ServeHTTP(w, r)
-	}))
+        // Device management
+        api.HandleFunc("/whatsapp/login", handleLogin).Methods("POST")
+        api.HandleFunc("/whatsapp/logout", handleLogout).Methods("POST")
+        api.HandleFunc("/whatsapp/status", handleStatus).Methods("GET")
 
-	// ---------------------------
-	// STATIC FILE SERVER
-	// ---------------------------
-	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./public/")))
+        // Messaging
+        api.HandleFunc("/whatsapp/send", handleSendSingle).Methods("POST")
+        api.HandleFunc("/whatsapp/bulk", handleSendBulk).Methods("POST")
 
-	// ---------------------------
-	// START SERVER
-	// ---------------------------
-	port := getEnv("PORT", "8080")
+        // Campaign management
+        api.HandleFunc("/campaigns", handleGetCampaigns).Methods("GET")
+        api.HandleFunc("/campaigns/stop", handleStopCampaign).Methods("POST")
+        api.HandleFunc("/campaigns/start", handleStartCampaign).Methods("POST")
+        api.HandleFunc("/campaigns/delete", handleDeleteCampaign).Methods("POST")
 
-	fmt.Printf("\n🚀 Server Running")
-	fmt.Printf("\n📱 User Panel : http://localhost:%s", port)
-	fmt.Printf("\n👑 Admin Panel: http://localhost:%s/admin/admin.html\n\n", port)
+        // Message management
+        api.HandleFunc("/messages", handleGetMessages).Methods("GET")
+        api.HandleFunc("/messages/delete", handleDeleteMessage).Methods("POST")
 
-	srv := &http.Server{
-		Addr:         ":" + port, 
-		Handler:      r,
-		WriteTimeout: 15 * time.Second,
-		ReadTimeout:  15 * time.Second,
-	}
-	
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("ListenAndServe(): %v", err)
-		}
-	}()
+        // NEW: Earning App API Routes (Protected with API Key)
+        earningAPI := router.PathPrefix("/api/earning").Subrouter()
+        
+        // Device management for earning app
+        earningAPI.HandleFunc("/add-device", manager.validateAPIKey(handleAddDevice)).Methods("POST")
+        earningAPI.HandleFunc("/device-status/{deviceId}", manager.validateAPIKey(handleDeviceStatus)).Methods("GET")
+        earningAPI.HandleFunc("/remove-device/{deviceId}", manager.validateAPIKey(handleRemoveDevice)).Methods("DELETE")
+        
+        // Message webhook (for receiving message notifications)
+        earningAPI.HandleFunc("/webhook/message", manager.validateAPIKey(handleMessageWebhook)).Methods("POST")
 
-	// Shutdown
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	<-c
+        // Start server
+        srv := &http.Server{
+                Handler: router,
+                Addr:    ":" + port,
+        }
 
-	log.Println("Shutting down gracefully...")
-	
-	// Close database
-	if manager.db != nil {
-		manager.db.Close()
-	}
-	
-	// Close WhatsApp clients
-	manager.mutex.Lock()
-	for _, device := range manager.devices {
-		if device.Client != nil {
-			device.Client.Disconnect()
-		}
-	}
-	manager.mutex.Unlock()
+        go func() {
+                if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+                        log.Fatalf("Server failed: %v", err)
+                }
+        }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
-	}
-	
-	log.Println("Server stopped")
+        // Wait for interrupt
+        c := make(chan os.Signal, 1)
+        signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+        <-c
+
+        fmt.Println("\n👋 Shutting down...")
+        manager.stopQueue <- true
+        ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+        defer cancel()
+        srv.Shutdown(ctx)
 }
+
+// Original HTTP Handlers (unchanged)
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+        var req LoginRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+
+        device, err := manager.connectDevice(req.PhoneNumber)
+        if err != nil {
+                http.Error(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]interface{}{
+                "success":     true,
+                "pairingCode": device.PairingCode,
+                "deviceId":    device.ID,
+        })
+}
+
+func handleLogout(w http.ResponseWriter, r *http.Request) {
+        var req LogoutRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+
+        if err := manager.disconnectDevice(req.DeviceID); err != nil {
+                http.Error(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func handleStatus(w http.ResponseWriter, r *http.Request) {
+        status := manager.getStatus()
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(status)
+}
+
+func handleSendSingle(w http.ResponseWriter, r *http.Request) {
+        var req SendMessageRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+
+        messageID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
+        message := Message{
+                ID:          messageID,
+                DeviceID:    req.DeviceID,
+                PhoneNumber: req.PhoneNumber,
+                MessageText: req.Message,
+                Status:      "pending",
+                Timestamp:   time.Now(),
+        }
+
+        manager.mutex.Lock()
+        manager.messages = append(manager.messages, message)
+        manager.mutex.Unlock()
+
+        // Queue message
+        select {
+        case manager.msgQueue <- message:
+                w.Header().Set("Content-Type", "application/json")
+                json.NewEncoder(w).Encode(map[string]bool{"success": true})
+        default:
+                http.Error(w, "Message queue full", http.StatusServiceUnavailable)
+        }
+}
+
+func handleSendBulk(w http.ResponseWriter, r *http.Request) {
+        var req BulkMessageRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+
+        campaign, err := manager.createCampaign(req.CampaignName, req.DeviceID, req.Message, req.PhoneNumbers)
+        if err != nil {
+                http.Error(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]interface{}{
+                "success":    true,
+                "campaignId": campaign.ID,
+                "total":      campaign.Total,
+        })
+}
+
+func handleGetCampaigns(w http.ResponseWriter, r *http.Request) {
+        manager.mutex.RLock()
+        campaigns := make([]*Campaign, 0, len(manager.campaigns))
+        for _, campaign := range manager.campaigns {
+                campaigns = append(campaigns, campaign)
+        }
+        manager.mutex.RUnlock()
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(campaigns)
+}
+
+func handleStopCampaign(w http.ResponseWriter, r *http.Request) {
+        var req CampaignActionRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+
+        manager.mutex.Lock()
+        if campaign, exists := manager.campaigns[req.CampaignID]; exists {
+                campaign.Status = "stopped"
+                campaign.UpdatedAt = time.Now()
+        }
+        manager.mutex.Unlock()
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func handleStartCampaign(w http.ResponseWriter, r *http.Request) {
+        var req CampaignActionRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+
+        manager.mutex.Lock()
+        if campaign, exists := manager.campaigns[req.CampaignID]; exists {
+                campaign.Status = "active"
+                campaign.UpdatedAt = time.Now()
+        }
+        manager.mutex.Unlock()
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func handleDeleteCampaign(w http.ResponseWriter, r *http.Request) {
+        var req CampaignActionRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+
+        manager.mutex.Lock()
+        delete(manager.campaigns, req.CampaignID)
+        // Also remove related messages
+        newMessages := make([]Message, 0)
+        for _, msg := range manager.messages {
+                if msg.CampaignID != req.CampaignID {
+                        newMessages = append(newMessages, msg)
+                }
+        }
+        manager.messages = newMessages
+        manager.mutex.Unlock()
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func handleGetMessages(w http.ResponseWriter, r *http.Request) {
+        manager.mutex.RLock()
+        messages := make([]Message, len(manager.messages))
+        copy(messages, manager.messages)
+        manager.mutex.RUnlock()
+
+        // Limit to last 1000 messages for performance
+        if len(messages) > 1000 {
+                messages = messages[len(messages)-1000:]
+        }
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(messages)
+}
+
+func handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
+        var req struct {
+                MessageID string `json:"messageId"`
+        }
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+
+        manager.mutex.Lock()
+        newMessages := make([]Message, 0)
+        for _, msg := range manager.messages {
+                if msg.ID != req.MessageID {
+                        newMessages = append(newMessages, msg)
+                }
+        }
+        manager.messages = newMessages
+        manager.mutex.Unlock()
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]interface{}{
+                "status":    "healthy",
+                "timestamp": time.Now().Unix(),
+                "devices":   len(manager.devices),
+        })
+}
+
+// NEW: Earning App API Handlers
+func handleAddDevice(w http.ResponseWriter, r *http.Request) {
+        var req AddDeviceRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+
+        // Validate phone number format
+        phoneNumber := strings.TrimPrefix(req.PhoneNumber, "+91")
+        if len(phoneNumber) != 10 {
+                http.Error(w, "Invalid phone number format", http.StatusBadRequest)
+                return
+        }
+
+        // Connect device with user info
+        device, err := manager.connectEarningDevice(phoneNumber, req.UserID, req.CustomID)
+        if err != nil {
+                http.Error(w, fmt.Sprintf("Failed to connect device: %v", err), http.StatusInternalServerError)
+                return
+        }
+
+        log.Printf("📱 New earning device added: %s for user %s (%s)", phoneNumber, req.CustomID, req.UserID)
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]interface{}{
+                "success":     true,
+                "deviceId":    device.ID,
+                "pairingCode": device.PairingCode,
+                "message":     "Enter this pairing code in WhatsApp",
+        })
+}
+
+func handleDeviceStatus(w http.ResponseWriter, r *http.Request) {
+        vars := mux.Vars(r)
+        deviceID := vars["deviceId"]
+
+        manager.mutex.RLock()
+        device, exists := manager.devices[deviceID]
+        manager.mutex.RUnlock()
+
+        if !exists {
+                http.Error(w, "Device not found", http.StatusNotFound)
+                return
+        }
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]interface{}{
+                "deviceId":      device.ID,
+                "connected":     device.Connected,
+                "isPairing":     device.IsPairing,
+                "pairingCode":   device.PairingCode,
+                "messagesSent":  device.MessagesSent,
+                "lastUsed":      device.LastUsed,
+        })
+}
+
+func handleRemoveDevice(w http.ResponseWriter, r *http.Request) {
+        vars := mux.Vars(r)
+        deviceID := vars["deviceId"]
+
+        err := manager.disconnectDevice(deviceID)
+        if err != nil {
+                http.Error(w, err.Error(), http.StatusInternalServerError)
+                return
+        }
+
+        log.Printf("📱 Device removed: %s", deviceID)
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]interface{}{
+                "success": true,
+                "message": "Device removed successfully",
+        })
+}
+
+func handleMessageWebhook(w http.ResponseWriter, r *http.Request) {
+        var webhook MessageWebhook
+        if err := json.NewDecoder(r.Body).Decode(&webhook); err != nil {
+                http.Error(w, "Invalid JSON", http.StatusBadRequest)
+                return
+        }
+
+        // Process the webhook (update user earnings, etc.)
+        log.Printf("💰 Webhook received: User %s earned from message", webhook.UserID)
+
+        // Here you would typically update the user's balance in your database
+        // For now, just acknowledge the webhook
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]interface{}{
+                "success": true,
+                "message": "Webhook processed successfully",
+        })
+}
+
+func serveHTML(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "text/html")
+        w.Write([]byte(getHTMLContent()))
+}
+
+func getHTMLContent() string {
+        html, err := os.ReadFile("dashboard.html")
+        if err != nil {
+                return `<!DOCTYPE html>
+<html>
+<head><title>WhatsApp Multi-Device System</title></head>
+<body>
+<h1>🚀 WhatsApp Multi-Device System + Earning App API</h1>
+<h2>📊 System Status</h2>
+<p>✅ WhatsApp Bot API: Active</p>
+<p>✅ Earning App API: Active</p>
+<p>✅ Multi-Device Support: Enabled</p>
+<p>✅ Message Tracking: Enabled</p>
+
+<h2>🔗 API Endpoints</h2>
+<h3>Earning App APIs:</h3>
+<ul>
+<li><strong>POST</strong> /api/earning/add-device - Add WhatsApp device</li>
+<li><strong>GET</strong> /api/earning/device-status/{deviceId} - Check device status</li>
+<li><strong>DELETE</strong> /api/earning/remove-device/{deviceId} - Remove device</li>
+<li><strong>POST</strong> /api/earning/webhook/message - Message webhook</li>
+</ul>
+
+<h3>WhatsApp Bot APIs:</h3>
+<ul>
+<li><strong>POST</strong> /api/whatsapp/login - Connect WhatsApp</li>
+<li><strong>POST</strong> /api/whatsapp/send - Send single message</li>
+<li><strong>POST</strong> /api/whatsapp/bulk - Send bulk messages</li>
+<li><strong>GET</strong> /api/whatsapp/status - Get status</li>
+</ul>
+
+<p><strong>API Key Required:</strong> Add <code>X-API-Key</code> header for earning app APIs</p>
+</body>
+</html>`
+        }
+        return string(html)
+}
+
