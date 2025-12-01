@@ -850,30 +850,29 @@ func handleAddDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRemoveDevice(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["deviceId"]
+    vars := mux.Vars(r)
+    id := vars["deviceId"]
 
-	manager.mutex.Lock()
+    manager.mutex.Lock()
 
-	if dev, ok := manager.devices[id]; ok {
-		if dev.Client != nil {
-			_ = dev.Client.Disconnect()
-			_ = dev.Client.Logout(manager.ctx)
-		}
+    if dev, ok := manager.devices[id]; ok {
+        if dev.Client != nil {
+            dev.Client.Disconnect()               // <-- FIXED
+            _ = dev.Client.Logout(manager.ctx)    // <-- OK
+        }
 
-		jid, _ := types.ParseJID(id + "@s.whatsapp.net")
-		_ = manager.container.DeleteDevice(manager.ctx, &store.Device{ID: &jid})
+        jid, _ := types.ParseJID(id + "@s.whatsapp.net")
+        _ = manager.container.DeleteDevice(manager.ctx, &store.Device{ID: &jid})
 
-		delete(manager.devices, id)
-	}
+        delete(manager.devices, id)
+    }
 
-	manager.mutex.Unlock()
+    manager.mutex.Unlock()
 
-	_, _ = manager.db.Exec("DELETE FROM earning_users WHERE phone_number=?", id)
+    _, _ = manager.db.Exec("DELETE FROM earning_users WHERE phone_number=?", id)
 
-	_ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
+    _ = json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
-
 /* ---------------------------------------------------
    ANTI-BAN API ROUTES (for admin panel)
 --------------------------------------------------- */
