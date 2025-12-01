@@ -36,32 +36,40 @@ var masterAdminPassword = "admin@6371" // Change anytime
 
 // Admin Login API
 func adminLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
 	var data struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
 
-	json.NewDecoder(r.Body).Decode(&data)
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
 
 	if data.Email == masterAdminEmail && data.Password == masterAdminPassword {
 		http.SetCookie(w, &http.Cookie{
-			Name:   "adminSession",
-			Value:  "authenticated",
-			MaxAge: 86400, // 1 day
-			Path:   "/",
+			Name:     "adminSession",
+			Value:    "authenticated",
+			MaxAge:   86400, // 1 day
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   false, // set to true in production with HTTPS
 		})
 		w.Write([]byte(`{"status":"ok","role":"admin"}`))
 		return
 	}
 
-	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 }
 
 // Protect admin.html
 func adminLoginCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	c, err := r.Cookie("adminSession")
 	if err != nil || c.Value != "authenticated" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
 	w.Write([]byte(`{"status":"ok"}`))
@@ -294,11 +302,18 @@ func NewWhatsAppManager() *WhatsAppManager {
 func (wm *WhatsAppManager) initDB() {
 	query := `
 	CREATE TABLE IF NOT EXISTS messages (
-		id TEXT PRIMARY KEY, device_id TEXT, phone_number TEXT, 
-		message_text TEXT, status TEXT, timestamp DATETIME, sent_at DATETIME
+		id TEXT PRIMARY KEY, 
+		device_id TEXT, 
+		phone_number TEXT, 
+		message_text TEXT, 
+		status TEXT, 
+		timestamp DATETIME, 
+		sent_at DATETIME
 	);
 	CREATE TABLE IF NOT EXISTS earning_users (
-		phone_number TEXT PRIMARY KEY, user_id TEXT, custom_id TEXT
+		phone_number TEXT PRIMARY KEY, 
+		user_id TEXT, 
+		custom_id TEXT
 	);
 	`
 	_, err := wm.db.Exec(query)
@@ -306,6 +321,7 @@ func (wm *WhatsAppManager) initDB() {
 		log.Fatal("DB Init failed:", err)
 	}
 }
+
 /* ---------------------------------------------------
    DEVICE WARM-UP & TRUST HELPERS
 --------------------------------------------------- */
@@ -336,9 +352,11 @@ func (wm *WhatsAppManager) deviceCanSend(device *Device) bool {
 	if device == nil {
 		return false
 	}
+	
+	wm.mutex.Lock()
+	defer wm.mutex.Unlock()
+	
 	now := time.Now()
-
-	// Reset per-device daily counter at midnight
 	if device.LastResetDay != now.Day() {
 		device.DailySent = 0
 		device.LastResetDay = now.Day()
@@ -367,6 +385,7 @@ func (wm *WhatsAppManager) deviceCanSend(device *Device) bool {
 func (wm *WhatsAppManager) reconnectDevices() {
 	devices, err := wm.container.GetAllDevices(wm.ctx)
 	if err != nil {
+		log.Printf("Error getting devices: %v", err)
 		return
 	}
 
@@ -377,7 +396,10 @@ func (wm *WhatsAppManager) reconnectDevices() {
 		phoneNumber := d.ID.User
 
 		var userID, customID string
-		wm.db.QueryRow("SELECT user_id, custom_id FROM earning_users WHERE phone_number = ?", phoneNumber).Scan(&userID, &customID)
+		err := wm.db.QueryRow("SELECT user_id, custom_id FROM earning_users WHERE phone_number = ?", phoneNumber).Scan(&userID, &customID)
+		if err != nil && err != sql.ErrNoRows {
+			log.Printf("Error querying earning_users: %v", err)
+		}
 
 		clientLog := waLog.Stdout("Client-"+phoneNumber, "ERROR", true)
 		client := whatsmeow.NewClient(d, clientLog)
@@ -397,7 +419,14 @@ func (wm *WhatsAppManager) reconnectDevices() {
 		}
 
 		wm.registerHandlers(client, device)
-		client.Connect()
+		
+		go func(client *whatsmeow.Client, phone string) {
+			time.Sleep(2 * time.Second) // Small delay before connecting
+			err := client.Connect()
+			if err != nil {
+				log.Printf("Failed to connect device %s: %v", phone, err)
+			}
+		}(client, phoneNumber)
 
 		wm.mutex.Lock()
 		wm.devices[phoneNumber] = device
@@ -447,7 +476,10 @@ func (wm *WhatsAppManager) connectDevice(phoneNumber string, userID, customID st
 	wm.devices[phoneNumber] = device
 
 	if userID != "" {
-		wm.db.Exec("INSERT OR REPLACE INTO earning_users (phone_number, user_id, custom_id) VALUES (?, ?, ?)", phoneNumber, userID, customID)
+		_, err := wm.db.Exec("INSERT OR REPLACE INTO earning_users (phone_number, user_id, custom_id) VALUES (?, ?, ?)", phoneNumber, userID, customID)
+		if err != nil {
+			log.Printf("Error saving earning user: %v", err)
+		}
 	}
 
 	go wm.monitorPairing(device)
@@ -463,11 +495,13 @@ func (wm *WhatsAppManager) registerHandlers(client *whatsmeow.Client, device *De
 			device.Connected = true
 			device.IsPairing = false
 			wm.mutex.Unlock()
+			log.Printf("Device %s connected successfully", device.PhoneNumber)
 
 		case *events.Disconnected:
 			wm.mutex.Lock()
 			device.Connected = false
 			wm.mutex.Unlock()
+			log.Printf("Device %s disconnected", device.PhoneNumber)
 
 		case *events.Message:
 			if !v.Info.IsFromMe && device.UserID != "" {
@@ -480,6 +514,7 @@ func (wm *WhatsAppManager) registerHandlers(client *whatsmeow.Client, device *De
 			device.IsPairing = false
 			device.PairingCode = ""
 			wm.mutex.Unlock()
+			log.Printf("Device %s paired successfully", device.PhoneNumber)
 		}
 	})
 }
@@ -496,6 +531,11 @@ func (wm *WhatsAppManager) monitorPairing(device *Device) {
 			return
 		}
 	}
+	
+	wm.mutex.Lock()
+	device.IsPairing = false
+	wm.mutex.Unlock()
+	log.Printf("Pairing timeout for device %s", device.PhoneNumber)
 }
 
 /* ---------------------------------------------------
@@ -511,7 +551,7 @@ func (wm *WhatsAppManager) handleIncomingMessage(device *Device, msg *events.Mes
 		body = msg.Message.GetExtendedTextMessage().GetText()
 	}
 
-	wm.db.Exec(
+	_, err := wm.db.Exec(
 		"INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp) VALUES (?,?,?,?,?,?)",
 		fmt.Sprintf("in_%d", msg.Info.Timestamp.UnixNano()),
 		device.ID,
@@ -520,6 +560,9 @@ func (wm *WhatsAppManager) handleIncomingMessage(device *Device, msg *events.Mes
 		"received",
 		time.Now(),
 	)
+	if err != nil {
+		log.Printf("Error saving incoming message: %v", err)
+	}
 }
 
 // canSendNow returns whether it's okay to send right now (global daily cap, silent hours)
@@ -738,7 +781,10 @@ func (wm *WhatsAppManager) sendActualMessage(message Message) bool {
 }
 
 func (wm *WhatsAppManager) updateMsgStatus(id, status string) {
-	wm.db.Exec("UPDATE messages SET status=?, sent_at=? WHERE id=?", status, time.Now(), id)
+	_, err := wm.db.Exec("UPDATE messages SET status=?, sent_at=? WHERE id=?", status, time.Now(), id)
+	if err != nil {
+		log.Printf("Error updating message status: %v", err)
+	}
 }
 
 /* ---------------------------------------------------
@@ -746,34 +792,60 @@ func (wm *WhatsAppManager) updateMsgStatus(id, status string) {
 --------------------------------------------------- */
 
 func handleGetMessages(w http.ResponseWriter, r *http.Request) {
-	rows, _ := manager.db.Query(`
+	w.Header().Set("Content-Type", "application/json")
+	
+	rows, err := manager.db.Query(`
 		SELECT id, device_id, phone_number, message_text, status, timestamp 
 		FROM messages ORDER BY timestamp DESC LIMIT 200
 	`)
+	if err != nil {
+		http.Error(w, `{"error":"Database error"}`, http.StatusInternalServerError)
+		return
+	}
 	defer rows.Close()
 
 	var messages []Message
 
 	for rows.Next() {
 		var m Message
-		rows.Scan(&m.ID, &m.DeviceID, &m.PhoneNumber, &m.MessageText, &m.Status, &m.Timestamp)
+		err := rows.Scan(&m.ID, &m.DeviceID, &m.PhoneNumber, &m.MessageText, &m.Status, &m.Timestamp)
+		if err != nil {
+			log.Printf("Error scanning message: %v", err)
+			continue
+		}
 		messages = append(messages, m)
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, `{"error":"Database error"}`, http.StatusInternalServerError)
+		return
 	}
 
 	json.NewEncoder(w).Encode(messages)
 }
+
 func handleSendSingle(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
 	var req Message
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
 
 	req.ID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	req.Status = "pending"
 	req.Timestamp = time.Now()
 
-	manager.db.Exec(`
+	_, err := manager.db.Exec(`
 		INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp) 
 		VALUES (?,?,?,?,?,?)
 	`, req.ID, req.DeviceID, req.PhoneNumber, req.MessageText, req.Status, req.Timestamp)
+
+	if err != nil {
+		http.Error(w, `{"error":"Failed to save message"}`, http.StatusInternalServerError)
+		return
+	}
 
 	// push to the queue (will be sent by anti-ban queue)
 	manager.msgQueue <- req
@@ -782,10 +854,12 @@ func handleSendSingle(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSendBulk(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
 	var req BulkRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON", 400)
+		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -808,10 +882,15 @@ func handleSendBulk(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// insert to DB immediately
-			manager.db.Exec(`
+			_, err := manager.db.Exec(`
 				INSERT INTO messages (id, device_id, phone_number, message_text, status, timestamp)
 				VALUES (?,?,?,?,?,?)
 			`, msg.ID, msg.DeviceID, msg.PhoneNumber, msg.MessageText, msg.Status, msg.Timestamp)
+
+			if err != nil {
+				log.Printf("Error saving bulk message: %v", err)
+				continue
+			}
 
 			// push into queue — anti-ban queue will pace sends
 			manager.msgQueue <- msg
@@ -825,6 +904,8 @@ func handleSendBulk(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
 	manager.mutex.RLock()
 	defer manager.mutex.RUnlock()
 
@@ -838,14 +919,19 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleAddDevice(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
 	var req AddDeviceRequest
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
 
 	phone := strings.TrimPrefix(req.PhoneNumber, "+")
 
 	device, err := manager.connectDevice(phone, req.UserID, req.CustomID)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 
@@ -857,10 +943,13 @@ func handleAddDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRemoveDevice(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
 	vars := mux.Vars(r)
 	id := vars["deviceId"]
 
 	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
 
 	if dev, ok := manager.devices[id]; ok {
 		if dev.Client != nil {
@@ -874,9 +963,10 @@ func handleRemoveDevice(w http.ResponseWriter, r *http.Request) {
 		delete(manager.devices, id)
 	}
 
-	manager.mutex.Unlock()
-
-	manager.db.Exec("DELETE FROM earning_users WHERE phone_number=?", id)
+	_, err := manager.db.Exec("DELETE FROM earning_users WHERE phone_number=?", id)
+	if err != nil {
+		log.Printf("Error deleting earning user: %v", err)
+	}
 
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
@@ -886,6 +976,8 @@ func handleRemoveDevice(w http.ResponseWriter, r *http.Request) {
 --------------------------------------------------- */
 
 func handleAntiBanGet(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
 	manager.mutex.RLock()
 	defer manager.mutex.RUnlock()
 
@@ -908,8 +1000,13 @@ func handleAntiBanGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleAntiBanSave(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
 	var cfg AntiBanSettings
-	json.NewDecoder(r.Body).Decode(&cfg)
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		http.Error(w, `{"error":"Invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
 
 	AntiBanConfig = cfg
 	saveAntiBanConfig()
@@ -950,15 +1047,18 @@ func handleAntiBanSave(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleAntiBanResetDevice(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
 	id := mux.Vars(r)["deviceId"]
 
 	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+
 	if d, ok := manager.devices[id]; ok {
 		d.DailySent = 0
 		d.Trust = 60
 		d.LastResetDay = time.Now().Day()
 	}
-	manager.mutex.Unlock()
 
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
@@ -977,10 +1077,10 @@ func getEnv(key, fallback string) string {
 }
 
 func main() {
-	manager = NewWhatsAppManager()
-
-	// Ensure rand seeded (NewWhatsAppManager also seeds, but double-safe)
+	// Ensure rand seeded
 	rand.Seed(time.Now().UnixNano())
+	
+	manager = NewWhatsAppManager()
 
 	r := mux.NewRouter()
 
@@ -989,7 +1089,7 @@ func main() {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(200)
@@ -1051,7 +1151,13 @@ func main() {
 	fmt.Printf("\n📱 User Panel : http://localhost:%s", port)
 	fmt.Printf("\n👑 Admin Panel: http://localhost:%s/admin/admin.html\n\n", port)
 
-	srv := &http.Server{Addr: ":" + port, Handler: r}
+	srv := &http.Server{
+		Addr:         ":" + port, 
+		Handler:      r,
+		WriteTimeout: 15 * time.Second,
+		ReadTimeout:  15 * time.Second,
+	}
+	
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("ListenAndServe(): %v", err)
@@ -1063,7 +1169,28 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	<-c
 
-	manager.db.Close()
-	fmt.Println("Shutting down...")
-	srv.Close()
+	log.Println("Shutting down gracefully...")
+	
+	// Close database
+	if manager.db != nil {
+		manager.db.Close()
+	}
+	
+	// Close WhatsApp clients
+	manager.mutex.Lock()
+	for _, device := range manager.devices {
+		if device.Client != nil {
+			device.Client.Disconnect()
+		}
+	}
+	manager.mutex.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
+	}
+	
+	log.Println("Server stopped")
 }
